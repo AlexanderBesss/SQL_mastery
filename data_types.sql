@@ -1,4 +1,4 @@
--- PostgreSQL data types: https://www.postgresql.org/docs/current/datatype.html
+-- PostgreSQL 17 data types: https://www.postgresql.org/docs/current/datatype.html
 
 Name                                Aliases                     Description
 bigint                              int8                        signed eight-byte integer

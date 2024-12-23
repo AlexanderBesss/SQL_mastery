@@ -112,3 +112,11 @@ select
 from film;
 -- The same result using WHERE for single element
 select count(*) from film where rating in ('R', 'NC-17');
+
+-- Types in SQL
+-- Strings
+select concat(first_name, ' has email ', email) from customer where email is null;
+select first_name || ' has email ' || coalesce(email, 'unknown')from customer where email is null; 
+select first_name || ' was created on ' || create_date from customer;
+select length(trim('   1234    '));
+select * from address where length(trim(address2)) > 0 and address2 is not null;
