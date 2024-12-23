@@ -1,7 +1,7 @@
 -- PostgreSQL 17 data types: https://www.postgresql.org/docs/current/datatype.html
 
 Name                                Aliases                     Description
-bigint                              int8                        signed eight-byte integer
+bigint                              int8                        signed eight-byte integer, -9223372036854775808 to 9223372036854775807
 bigserial                           serial8                     autoincrementing eight-byte integer
 bit [ (n) ]                                                     fixed-length bit string
 bit varying [ (n) ]                 varbit [ (n) ]              variable-length bit string
@@ -15,7 +15,7 @@ circle                                                          circle on a plan
 date                                                            calendar date (year, month, day)
 double precision                    float8                      double precision floating-point number (8 bytes)
 inet                                                            IPv4 or IPv6 host address
-integer                             int, int4                   signed four-byte integer
+integer                             int, int4                   signed four-byte integer, -2147483648 to 2147483647
 interval [ fields ] [ (p) ]                                      time span
 json                                                            textual JSON data
 jsonb                                                           binary JSON data, decomposed
@@ -31,7 +31,7 @@ pg_snapshot                                                     user-level trans
 point                                                           geometric point on a plane
 polygon                                                         closed geometric path on a plane
 real                                float4                      single precision floating-point number (4 bytes)
-smallint                            int2                        signed two-byte integer
+smallint                            int2                        signed two-byte integer, -32768 to 32767
 smallserial                         serial2                     autoincrementing two-byte integer
 serial                              serial4                     autoincrementing four-byte integer
 text                                                            variable-length character string

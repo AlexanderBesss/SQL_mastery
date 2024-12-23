@@ -103,7 +103,7 @@ group by 1;
 -- CASE inside aggregation fanction
 select sum(case when rating in ('R', 'NC-17') then 1 else 0 end) as adult_films, 
        count(*), 
-       100 * sum(case when rating in ('R', 'NC-17') then 1 else 0 end) as adult_films, count(*) / count(*) as persentage
+       100.0 * sum(case when rating in ('R', 'NC-17') then 1 else 0 end) as adult_films, count(*) / count(*) as persentage
 from film;
 -- Postgress DB simplified version
 select 
@@ -120,3 +120,17 @@ select first_name || ' has email ' || coalesce(email, 'unknown')from customer wh
 select first_name || ' was created on ' || create_date from customer;
 select length(trim('   1234    '));
 select * from address where length(trim(address2)) > 0 and address2 is not null;
+-- Numbers
+select pg_typeof( 3/2 ); -- result: 1 integer
+select pg_typeof( 3.0/2 ); -- result: 1.5 numeric
+-- 3 different ways to case string into int4
+select int '33', '33'::int, cast('33' as int);
+-- Cast bigint into int as funcrtion paramether
+select rating, repeat('*', (count(*) / 10)::int) as "count/10" from film where rating is not null group by rating;
+
+-- numeric(precision, scale);
+-- numeric(5,2) -- 999,99 total length is 5, 2 after the comma 
+-- real   -- 6 digit after comma
+-- double -- 15 digit after comma
+select 0.4235::numeric(5,4) * 10000000,  0.4235::real * 10000000; -- 'real' introduce some erros, 'number' is recommended
+
