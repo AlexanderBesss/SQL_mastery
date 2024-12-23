@@ -71,3 +71,44 @@ order by customer_id , staff_id;
 select left(first_name, 1) as first_latter, count(*) from customer
 group by left(first_name, 1)
 order by first_latter;
+
+-- GROUP BY with CASE (expression should be the same in the SELECT and the GROUP BY section)
+select
+    case 
+    	when length < 60 then 'short'
+    	when length between 60 and 120 then 'medium'
+    	when length > 120 then 'long'
+    	else 'short'
+    end,
+    count(*)
+from film
+group by
+    case 
+    	when length < 60 then 'short'
+    	when length between 60 and 120 then 'medium'
+    	when length > 120 then 'long'
+    	else 'short'
+    end;
+-- Short version (1 - first position in the SELECT section)
+select
+    case 
+    	when length < 60 then 'short'
+    	when length between 60 and 120 then 'medium'
+    	when length > 120 then 'long'
+    	else 'short'
+    end,
+    count(*)
+from film
+group by 1;
+-- CASE inside aggregation fanction
+select sum(case when rating in ('R', 'NC-17') then 1 else 0 end) as adult_films, 
+       count(*), 
+       100 * sum(case when rating in ('R', 'NC-17') then 1 else 0 end) as adult_films, count(*) / count(*) as persentage
+from film;
+-- Postgress DB simplified version
+select 
+	count(*) filter(where rating in ('R', 'NC-17')) as adult_films,
+	count(*) filter(where rating = 'G' and length > 120) as mixed 
+from film;
+-- The same result using WHERE for single element
+select count(*) from film where rating in ('R', 'NC-17');
