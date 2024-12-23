@@ -59,3 +59,15 @@ select count(*) from film;
 select count(distinct rating) from film;
 select sum(length) from film;
 select min(amount), max(amount), avg(amount) from payment;
+
+-- GROUP BY and HAVING(filter the result)
+select rating, count(*) from film group by rating;
+
+select customer_id, staff_id, count(*) from payment
+group by customer_id, staff_id 
+having count(*) > 20
+order by customer_id , staff_id;
+-- Group by fist latter of user name
+select left(first_name, 1) as first_latter, count(*) from customer
+group by left(first_name, 1)
+order by first_latter;
