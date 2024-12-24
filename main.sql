@@ -27,8 +27,8 @@ select title, length from film order by right(title, 1), length desc;
 /* execution order in SQL:
 1. from
 2. where
-3. group by: aggrigate rows
-4. having: filter the agregates
+3. group by: aggregate rows
+4. having: filter the aggregates
 5. select
 6. order by
 7. limit
@@ -37,14 +37,14 @@ select title, length from film order by right(title, 1), length desc;
 -- Pagination
 select first_name, last_name from customer order by first_name limit 5;
 select first_name, last_name from customer order by first_name limit 5 offset 10;
--- Non standart pagination
+-- Non standard pagination
 select first_name, last_name from customer order by first_name offset 10 fetch next 5 rows only;
 
 --Remove duplicate rows (Unique combination of columns)
 select distinct customer_id from payment;
 select distinct date_part('month', payment_date) as month, date_part('year', payment_date) as year from payment order by year, month;
 
---if statment
+--if statement
 select title, length,
 	case
 		when length <= 60 then 'short'
@@ -54,7 +54,7 @@ select title, length,
 	end as lenght_description
 from film;
 
--- Aaggregate Funtions
+-- Aggregate Functions
 select count(*) from film;
 select count(distinct rating) from film;
 select sum(length) from film;
@@ -100,12 +100,12 @@ select
     count(*)
 from film
 group by 1;
--- CASE inside aggregation fanction
+-- CASE inside aggregation function
 select sum(case when rating in ('R', 'NC-17') then 1 else 0 end) as adult_films, 
        count(*), 
        100.0 * sum(case when rating in ('R', 'NC-17') then 1 else 0 end) as adult_films, count(*) / count(*) as persentage
 from film;
--- Postgress DB simplified version
+-- Postgres DB simplified version
 select 
 	count(*) filter(where rating in ('R', 'NC-17')) as adult_films,
 	count(*) filter(where rating = 'G' and length > 120) as mixed 
@@ -125,12 +125,34 @@ select pg_typeof( 3/2 ); -- result: 1 integer
 select pg_typeof( 3.0/2 ); -- result: 1.5 numeric
 -- 3 different ways to case string into int4
 select int '33', '33'::int, cast('33' as int);
--- Cast bigint into int as funcrtion paramether
+-- Cast bigint into int as function parameter
 select rating, repeat('*', (count(*) / 10)::int) as "count/10" from film where rating is not null group by rating;
 
 -- numeric(precision, scale);
 -- numeric(5,2) -- 999,99 total length is 5, 2 after the comma 
 -- real   -- 6 digit after comma
 -- double -- 15 digit after comma
-select 0.4235::numeric(5,4) * 10000000,  0.4235::real * 10000000; -- 'real' introduce some erros, 'number' is recommended
+select 0.4235::numeric(5,4) * 10000000,  0.4235::real * 10000000; -- 'real' introduce some errors, 'numeric' is recommended
+
+-- Dates
+select '2018-01-01'::date - '2017-01-01'::date; -- return difference in days: 365
+select '2018-01-01 3:00 Australia/Brisbane'::timestamptz;
+select '2018-01-01 3:00 +10'::timestamptz;
+select '2018-01-01 3:00 EST'::timestamptz; -- returns time relative to local time zone
+select timestamptz '2018-01-01 08:35 +8' - timestamptz '2018-01-01 08:35 EST';
+select timestamptz '2018-01-01 08:35 +8' + interval '13 days 3 hours'; -- add time 
+select customer_id, sum(return_date - rental_date) from rental group by customer_id;
+select 
+	customer_id,
+	sum(return_date - rental_date),
+	justify_hours(sum(return_date - rental_date))
+from rental group by customer_id;
+select date_part('year', timestamptz '2018-01-01 08:35 +8'); -- returns year part in date
+select date_part('epoch', timestamptz '2018-02-01 08:35 +8' - timestamptz '2018-01-01 010:35 +8'); -- returns difference in seconds
+select date_trunc('year', timestamptz '2018-03-01 08:35 +8'); -- 2018-01-01 00:00:00.000 +0200
+select date_trunc('month', timestamptz '2018-03-01 08:35 +8'); -- 2018-03-01 00:00:00.000 +0200 // returns given part of the date and rest of it is zeroes. It useful in grouping by dates
+select current_date, current_time, current_timestamp; -- functions to display current date
+
+
+
 
