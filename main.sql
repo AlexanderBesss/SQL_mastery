@@ -132,7 +132,7 @@ select rating, repeat('*', (count(*) / 10)::int) as "count/10" from film where r
 -- numeric(5,2) -- 999,99 total length is 5, 2 after the comma 
 -- real   -- 6 digit after comma
 -- double -- 15 digit after comma
-select 0.4235::numeric(5,4) * 10000000,  0.4235::real * 10000000; -- 'real' introduce some erros, 'numeric' is recommended
+select 0.4235::numeric(5,4) * 10000000,  0.4235::real * 10000000; -- 'real' introduce some errors, 'numeric' is recommended
 
 -- Dates
 select '2018-01-01'::date - '2017-01-01'::date; -- return difference in days: 365
@@ -154,7 +154,7 @@ select date_trunc('month', timestamptz '2018-03-01 08:35 +8'); -- 2018-03-01 00:
 select current_date, current_time, current_timestamp; -- functions to display current date
 
 -- JOINS
--- Cross join
+-- CROSS JOIN
 /* T1	T2 --> T1xT2 = 9, all possible combinations
    1	A
    2	B
@@ -163,7 +163,7 @@ select film_id, store_id from film cross join store order by film_id, store_id;
 select customer_id, staff_id, customer.email, staff.email from customer cross join staff; -- in case if both tables have the same column
 select c.customer_id, s.staff_id, c.email, s.email from customer as c cross join staff as s; -- with aliases in the tables
 
--- Inner join - the same as cross join but with a filter
+-- INNER JOIN - the same as cross join but with a filter
 select rental_date, first_name, last_name from rental inner join customer on rental.customer_id  = customer.customer_id;
 select * from film as f inner join film_actor as fa on f.film_id = fa.film_id where f.film_id = 803; -- no result for 803 id in case it does not exist in film_actor table
 -- Join multiple tables, 1x1 relation. By default "join" will be use inner join
@@ -182,8 +182,32 @@ select c.first_name || ' ' || c.last_name, city.city, country.country
 		inner join city using(city_id)
 		join country using(country_id);
 
+-- OUTER JOIN, the same as inner join but it will display missing rows. Possible way to display a result left join(everything from left table), right join(from right table), full join(from both tables)
+-- LEFT OUTER JOIN. the "outer" word could be dropped
+select f.film_id, f.title, fa.actor_id from film as f left outer join film_actor as fa on f.film_id = fa.film_id where f.film_id = 803; -- returns null result, (no result for inner join)
+-- RIGHT JOIN is rare, if you want to use the RIGHT JOIN, you can flip the tables and use LEFT JOIN instead. It is easier to understand!
 
-
-
-
-
+-- Number of actors
+select f.film_id, f.title, count(fa.actor_id) as "number of actors" from film as f
+	left outer join film_actor as fa 
+		on f.film_id = fa.film_id
+	group by f.film_id, f.title
+	order by f.film_id;
+-- Note: if combining outer join with inner join, we may lose null output
+select f.film_id, f.title, fa.actor_id, a.first_name, a.last_name 
+from film as f
+	left join film_actor as fa 
+		on f.film_id = fa.film_id
+	inner join actor as a
+		on fa.actor_id = a.actor_id
+	order by f.film_id; -- 803 film is missing here!!!
+-- To fix this: first execute inner join in brackets and the left join with film table
+ select f.film_id, f.title, fa.actor_id, a.first_name, a.last_name 
+ from film as f
+	left join 
+		(film_actor as fa
+			inner join actor as a
+				on fa.film_id = a.actor_id)
+		on fa.actor_id = a.actor_id
+	order by f.film_id;
+-- FULL JOIN is rare
