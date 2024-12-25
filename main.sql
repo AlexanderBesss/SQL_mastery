@@ -27,8 +27,8 @@ select title, length from film order by right(title, 1), length desc;
 /* execution order in SQL:
 1. from
 2. where
-3. group by: aggrigate rows
-4. having: filter the agregates
+3. group by: aggregate rows
+4. having: filter the aggregates
 5. select
 6. order by
 7. limit
@@ -37,14 +37,14 @@ select title, length from film order by right(title, 1), length desc;
 -- Pagination
 select first_name, last_name from customer order by first_name limit 5;
 select first_name, last_name from customer order by first_name limit 5 offset 10;
--- Non standart pagination
+-- Non standard pagination
 select first_name, last_name from customer order by first_name offset 10 fetch next 5 rows only;
 
 --Remove duplicate rows (Unique combination of columns)
 select distinct customer_id from payment;
 select distinct date_part('month', payment_date) as month, date_part('year', payment_date) as year from payment order by year, month;
 
---if statment
+--if statement
 select title, length,
 	case
 		when length <= 60 then 'short'
@@ -54,7 +54,7 @@ select title, length,
 	end as lenght_description
 from film;
 
--- Aaggregate Funtions
+-- Aggregate Functions
 select count(*) from film;
 select count(distinct rating) from film;
 select sum(length) from film;
@@ -100,12 +100,12 @@ select
     count(*)
 from film
 group by 1;
--- CASE inside aggregation fanction
+-- CASE inside aggregation function
 select sum(case when rating in ('R', 'NC-17') then 1 else 0 end) as adult_films, 
        count(*), 
        100.0 * sum(case when rating in ('R', 'NC-17') then 1 else 0 end) as adult_films, count(*) / count(*) as persentage
 from film;
--- Postgress DB simplified version
+-- Postgres DB simplified version
 select 
 	count(*) filter(where rating in ('R', 'NC-17')) as adult_films,
 	count(*) filter(where rating = 'G' and length > 120) as mixed 
@@ -125,7 +125,7 @@ select pg_typeof( 3/2 ); -- result: 1 integer
 select pg_typeof( 3.0/2 ); -- result: 1.5 numeric
 -- 3 different ways to case string into int4
 select int '33', '33'::int, cast('33' as int);
--- Cast bigint into int as funcrtion paramether
+-- Cast bigint into int as function parameter
 select rating, repeat('*', (count(*) / 10)::int) as "count/10" from film where rating is not null group by rating;
 
 -- numeric(precision, scale);
@@ -138,7 +138,7 @@ select 0.4235::numeric(5,4) * 10000000,  0.4235::real * 10000000; -- 'real' intr
 select '2018-01-01'::date - '2017-01-01'::date; -- return difference in days: 365
 select '2018-01-01 3:00 Australia/Brisbane'::timestamptz;
 select '2018-01-01 3:00 +10'::timestamptz;
-select '2018-01-01 3:00 EST'::timestamptz; -- retuns time relative to local time zone
+select '2018-01-01 3:00 EST'::timestamptz; -- returns time relative to local time zone
 select timestamptz '2018-01-01 08:35 +8' - timestamptz '2018-01-01 08:35 EST';
 select timestamptz '2018-01-01 08:35 +8' + interval '13 days 3 hours'; -- add time 
 select customer_id, sum(return_date - rental_date) from rental group by customer_id;
@@ -162,6 +162,28 @@ select current_date, current_time, current_timestamp; -- functions to display cu
 select film_id, store_id from film cross join store order by film_id, store_id;
 select customer_id, staff_id, customer.email, staff.email from customer cross join staff; -- in case if both tables have the same column
 select c.customer_id, s.staff_id, c.email, s.email from customer as c cross join staff as s; -- with aliases in the tables
+
+-- Inner join - the same as cross join but with a filter
+select rental_date, first_name, last_name from rental inner join customer on rental.customer_id  = customer.customer_id;
+select * from film as f inner join film_actor as fa on f.film_id = fa.film_id where f.film_id = 803; -- no result for 803 id in case it does not exist in film_actor table
+-- Join multiple tables, 1x1 relation. By default "join" will be use inner join
+select c.first_name || ' ' || c.last_name, city.city, country.country 
+	from customer as c 
+		inner join address as addr 
+			on c.address_id = addr.address_id
+		inner join city 
+			on addr.city_id = city.city_id
+		join country 
+			on country.country_id = city.country_id;
+-- shorter version by: using(column_name). Column names should be the same on joining tables
+select c.first_name || ' ' || c.last_name, city.city, country.country 
+	from customer as c 
+		inner join address using(address_id)
+		inner join city using(city_id)
+		join country using(country_id);
+
+
+
 
 
 
