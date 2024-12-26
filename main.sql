@@ -258,9 +258,16 @@ select
 	(select max(r2.rental_date) from rental as r2 where r2.customer_id = r1.customer_id and r2.rental_date < r1.rental_date)  as prev_rental_date
 from rental as r1 order by r1.customer_id , r1.rental_date;
 
-
-
-
+-- TABLE QUERIES. Creates a virtual table. Useful if you need multiple passes over some data. Also useful to resolve issue with repeating column due to SQL order execution.
+-- Show the average number of rentals per customer
+select avg(count) from (select customer_id, count(*) from rental group by customer_id) as t;
+-- Create a virtual table with own data
+select f.film_id, f.title, f.length, c.desc from film as f inner join 
+			(values
+				('short', 0 ,60),
+				('medium', 60 ,120),
+				('long', 120 ,10000)) as c("desc", "min", "max")
+				on f.length  >= c.min and f.length < c.max;
 
 
 
