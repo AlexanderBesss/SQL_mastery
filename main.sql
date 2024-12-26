@@ -211,3 +211,19 @@ from film as f
 		on fa.actor_id = a.actor_id
 	order by f.film_id;
 -- FULL JOIN is rare
+
+-- Concept of "SELF join"
+select c1.first_name || ' ' || c1.last_name, c2.first_name || ' ' || c2.last_name from customer as c1
+	cross join customer  as c2;
+select c1.first_name || ' ' || c1.last_name, c2.first_name || ' ' || c2.last_name from customer as c1
+	inner join customer  as c2 
+		on c1.customer_id < c2.customer_id;
+
+-- Concept of "COMPOSITE join"
+select c1.first_name || ' ' || c1.last_name, c2.first_name || ' ' || c2.last_name from customer as c1
+	inner join customer  as c2 
+		on c1.customer_id < c2.customer_id
+		and c1.customer_id <=3
+		and c2.customer_id <=3;
+
+
