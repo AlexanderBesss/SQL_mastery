@@ -269,5 +269,12 @@ select f.film_id, f.title, f.length, c.desc from film as f inner join
 				('long', 120 ,10000)) as c("desc", "min", "max")
 				on f.length  >= c.min and f.length < c.max;
 
+-- LATERAL subqueries (Very useful!!!). It is CORRELATED table. It will be create a new table for each main row
+-- return the 3 most recent rentals for each customer
+select c.customer_id, d.rental_id, d.rental_date from customer as c inner join lateral
+		(select r.customer_id, r.rental_id, r.rental_date from rental as r where r.customer_id = c.customer_id order by r.rental_date desc limit 3) as d
+		on c.customer_id = d.customer_id;
+
+
 
 
