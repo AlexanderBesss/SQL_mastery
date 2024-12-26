@@ -226,7 +226,7 @@ select c1.first_name || ' ' || c1.last_name, c2.first_name || ' ' || c2.last_nam
 		and c1.customer_id <=3
 		and c2.customer_id <=3;
 
--- SUB-QUERY. Un CORRELATED sub query, it has no dependency to the main query
+-- SUB-QUERY. Un-CORRELATED sub query, it has no dependency to the main query
 select title, length from film where length > (select avg(length) from film) order by length; -- sub query returns a single value to use it in "where".
 -- Sub-query in select
 select 
@@ -242,6 +242,23 @@ select * from actor where actor_id  not in (select distinct actor_id from actor
 											inner join film_actor using(actor_id)
 											inner join film using(film_id)
 											where rating = 'R');
+-- CORRELATED SUBQUERY. Runs the query for each row. The same result could be done with JOINs!
+select c.customer_id, c.first_name, c.last_name,
+(select max(r.rental_date) from rental as r where r.customer_id = c.customer_id) as "most recent rental"
+from customer as c;
+-- Returns customers where total amount of payments are less the 100
+select c.customer_id, c.first_name, c.last_name
+from customer as c where (select sum(amount) from payment as p where p.customer_id = c.customer_id) < 100;
+-- Return customers with at least 1 payment
+select c.customer_id, c.first_name, c.last_name
+from customer as c where exists (select * from payment as p where p.customer_id = c.customer_id);
+-- Show previous rental_date for each customer. CORRELATED SUBQUERIES are useful for such queries
+select 
+	r1.rental_id, r1.customer_id, r1.rental_date,
+	(select max(r2.rental_date) from rental as r2 where r2.customer_id = r1.customer_id and r2.rental_date < r1.rental_date)  as prev_rental_date
+from rental as r1 order by r1.customer_id , r1.rental_date;
+
+
 
 
 
