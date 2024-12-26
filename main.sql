@@ -226,4 +226,24 @@ select c1.first_name || ' ' || c1.last_name, c2.first_name || ' ' || c2.last_nam
 		and c1.customer_id <=3
 		and c2.customer_id <=3;
 
+-- SUB-QUERY. Un CORRELATED sub query, it has no dependency to the main query
+select title, length from film where length > (select avg(length) from film) order by length; -- sub query returns a single value to use it in "where".
+-- Sub-query in select
+select 
+	customer_id,
+	sum(amount) as customer_amount,
+	100.0 * sum(amount) / (select sum(amount) from payment) as pct
+from payment group by customer_id order by pct desc;
+
+select title, rating from film where rating in ('PG', 'PG-13');
+select title, rating from film where rating in (select distinct rating from film where left(cast(rating as text), 2) = 'PG'); -- the same result as above ^
+
+select * from actor where actor_id  not in (select distinct actor_id from actor
+											inner join film_actor using(actor_id)
+											inner join film using(film_id)
+											where rating = 'R');
+
+
+
+
 
