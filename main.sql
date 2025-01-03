@@ -286,7 +286,16 @@ select c.customer_id, d.rental_id, d.rental_date from customer as c inner join l
  )
  select * from film_stats where break_even > 30;
 
-
+-- Ranking window functions (over window)
+select 
+	title,
+	length,
+	rating,
+	row_number() over (order by length), -- returns row number base on length of the films. Like ranking system
+	rank() over (order by length), -- almost the same as the first one, but the same fil  m length have the same rank (with counter behind)
+	dense_rank() over (order by length), -- almost the same as the first one, but the same film length have the same rank
+	row_number() over (partition by rating order by length) -- apply partition for rating column (divide groups into smaller groups, but those groups are start from the beginning)
+from film;
 
 
 
