@@ -51,7 +51,7 @@ select title, length,
 		when length > 60 and length <=120 then 'long'
 		when length > 120 then 'very long'
 		else 'unknown'
-	end as lenght_description
+	end as length_description
 from film;
 
 -- Aggregate Functions
@@ -274,6 +274,26 @@ select f.film_id, f.title, f.length, c.desc from film as f inner join
 select c.customer_id, d.rental_id, d.rental_date from customer as c inner join lateral
 		(select r.customer_id, r.rental_id, r.rental_date from rental as r where r.customer_id = c.customer_id order by r.rental_date desc limit 3) as d
 		on c.customer_id = d.customer_id;
+
+-- Common table expressions - CTE (Increase readability of sub-queries)
+ with film_stats as -- possible to rename column names: with film_stat(t,rr,rc,be) as
+ (
+ 	select title, rental_rate, replacement_cost, ceil(replacement_cost / rental_rate) as break_even from film
+ ),
+ second_table as -- define multiple queries
+ (
+  -- possible to refer in this query to film_stats table
+ )
+ select * from film_stats where break_even > 30;
+
+
+
+
+
+
+
+
+
 
 
 
