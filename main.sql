@@ -297,12 +297,26 @@ select
 	row_number() over (partition by rating order by length) -- apply partition for rating column (divide groups into smaller groups, but those groups are start from the beginning)
 from film;
 
+-- Aggregate window functions
+select 
+	title, 
+	rating, 
+	length,
+	avg(length) over(partition by rating) -- calculate value over of window of films: each group select avg(length) from film where rating = 'G';
+from film;
 
-
-
-
-
-
+select 
+	customer_id,
+	payment_date,
+	amount,
+	sum(amount) over(
+		partition by customer_id 
+		order by payment_date
+		-- rows between unbounded preceding and current row -- default value if order by was used
+		rows between 2 preceding and current row -- override the calculation
+		-- rows between unbounded preceding and unbounded following  -- default without order by
+	) 
+from payment;
 
 
 
