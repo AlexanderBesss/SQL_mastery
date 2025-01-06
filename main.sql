@@ -304,7 +304,6 @@ select
 	length,
 	avg(length) over(partition by rating) -- calculate value over of window of films: each group select avg(length) from film where rating = 'G';
 from film;
-
 select 
 	customer_id,
 	payment_date,
@@ -317,7 +316,12 @@ select
 		-- rows between unbounded preceding and unbounded following  -- default without order by
 	) 
 from payment;
-
-
-
+-- Lag and Lead functions
+select 
+	rental_id,
+ 	customer_id,
+    rental_date,
+	lag(rental_date) over(partition by customer_id order by rental_date),
+	lead(rental_date) over(partition by customer_id order by rental_date)
+from rental;
 
