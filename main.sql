@@ -325,3 +325,21 @@ select
 	lead(rental_date) over(partition by customer_id order by rental_date)
 from rental;
 
+-- Set operations
+-- UNION, Combine the result of two queries (It will remove duplicates)
+-- UNION ALL (It will not remove duplicates)
+select first_name, last_name from customer
+UNION
+select first_name, last_name from staff
+UNION ALL
+select first_name, last_name from actor
+ORDER BY first_name;
+
+-- INTERSECT, returns the common rows between two queries
+select customer_id from customer where customer_id between 1 and 10
+INTERSECT
+select customer_id from customer where customer_id between 1 and 5;
+-- EXCEPT, returns the rows that are in the first query but not in the second query (EXCEPT ALL will not remove duplicates)
+select customer_id from customer where customer_id between 1 and 10
+EXCEPT
+select customer_id from customer where customer_id between 1 and 5;
