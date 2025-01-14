@@ -352,7 +352,7 @@ create table if not exists users(
 	last_name varchar(100) not null,
 	email varchar(100) not null unique,
 	date_of_birth date not null,
-	created_at timestamp default current_timestamp
+	created_at timestamptz default current_timestamp
 );
 
 -- insert data into the table
@@ -375,7 +375,7 @@ create table if not exists playground.users(
 	email varchar(100) constraint pk_index_123 primary key, -- constraint pk_index_123 is name of the index
 	first_name varchar(100) not null,
 	last_name varchar(100) not null,
-	is_active boolean default true
+	is_active boolean not null default true
 );
 insert into playground.users(first_name, last_name, email, is_active) 
 	values('John', 'Doe', 'alexandrbesss@gmail.com', false);
@@ -393,7 +393,7 @@ drop table if exists playground.notes cascade; -- cascade will remove all depend
 
 create table if not exists playground.note_tags(
 	note_id bigint,
-	tag varchar(100),
+	tag varchar(100) not null,
 	primary key(note_id, tag), -- composite primary key
 	foreign key(note_id) references playground.notes(note_id) on delete cascade on update cascade -- foreign key with cascade
 );
@@ -405,3 +405,14 @@ update playground.users set email = 'test@test.com' where email = 'alexandrbesss
 
 -- Delete schema
 drop schema if exists playground cascade;
+
+-- Check constraints
+create table if not exists playground.users(
+	email varchar(100) check(length(email) > 3 and position('@' in email) > 0),
+	tag varchar(100) check(tag in ('important', 'work', 'personal')),
+	date_of_birth date not null,
+	created_at timestamptz default now(),
+	updated_at timestamptz default current_timestamp,
+	check(date_of_birth < current_date),
+	check(created_at < updated_at)
+);
