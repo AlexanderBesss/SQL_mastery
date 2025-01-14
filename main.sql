@@ -416,3 +416,54 @@ create table if not exists playground.users(
 	check(date_of_birth < current_date),
 	check(created_at < updated_at)
 );
+
+-- Import and export data
+copy playground.users from 'C:\Users\Public\users.csv' with(format csv, header true);
+copy playground.users to 'C:\Users\Public\users.csv' with(format csv, header true);
+
+-- Transactions
+begin;
+insert into playground.users(email, first_name, last_name) values('test4@test.com', 'John', 'Doe');
+insert into playground.users(email, first_name, last_name) values('test5@test.com', 'John', 'Doe') returning *;
+select * from playground.users;
+rollback; -- undo the changes
+commit; -- save the changes
+
+-- Update data
+update playground.users set first_name = initcap('Jane'), last_name = initcap('abc') where email = 'test3@test.com';
+select * from playground.users;
+
+-- Update data with sub-query, data comes from another table
+begin;
+update payment
+set payment_date = (
+	select rental_date 
+	from rental 
+	where payment.rental_id = rental.rental_id
+);
+select r.rental_id, r.rental_date, p.payment_id, p.payment_date from rental as r inner join payment as p using(rental_id);
+rollback;
+
+-- Delete data
+begin;
+delete from playground.users where email = 'test3@test.com' returning *;
+select * from playground.users;
+rollback;
+
+-- Delete all data from the table
+begin;
+delete from playground.users;
+select * from playground.users;
+rollback;
+
+-- Delete data with sub-query where customer name is John
+begin;
+delete from payment where exists(
+	select * from customer where first_name = 'JOHN' and customer.customer_id = payment.customer_id) returning *;
+rollback;
+
+-- Truncate table, it will remove all data from the table(very fast)
+begin;
+truncate table playground.users;
+select * from playground.users;
+rollback;
