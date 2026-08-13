@@ -1,27 +1,45 @@
+-- Basic WHERE: filter films with rental duration not equal to 5
 select title, rental_duration from film where  rental_duration != 5;
 
+-- WHERE with string function: case-insensitive match on first name
 select  * from customer  where lower(first_name) = 'mary';
+-- WHERE with date comparison: all rentals from 2006-01-01 onwards
 select  * from rental where rental_date >= '2006-01-01';
+-- WHERE with exact timestamp match
 select  * from rental where rental_date = '2006-02-14 15:16:03';
 
+-- WHERE with AND: both conditions must be true
 select title, length, rental_duration from film where length > 100 and rental_duration = 5;
+-- WHERE with OR and parentheses: controls operator precedence
 select title, length, rental_duration from film where ( length > 100 or rental_duration = 5) or left (title ,1) = 'A';
+-- WHERE with NOT: negates the condition
 select title, length, rental_duration from film where not rental_duration = 5;
 
+-- IS NOT NULL: checks for non-null values
 select * from customer where email  is not null ;
+-- IS NULL with OR: includes rows where rating is null or not 'PG'
 select  title, rating from film where rating  != 'PG' or rating is null;
 
+-- NOT BETWEEN: excludes the range (inclusive boundaries)
 select  customer_id from customer where customer_id not  between  1 and 5;
+-- NOT IN: excludes specific values from the list
 select  customer_id from customer where customer_id not in(1,5,8);
+-- LEFT() with IN: first character matches one of the given letters
 select  first_name from customer where left(first_name, 1) in ('A', 'F', 'J');
 
+-- LIKE with '%': matches any string starting with 'M'
 select  first_name from customer where first_name  like 'M%';
+-- LIKE with '__': first two chars are any, third is 'M', then anything
 select  first_name from customer where first_name  like '__M%';
+-- ILIKE: case-insensitive version of LIKE
 select  first_name from customer where first_name ilike '__m%';
 
+-- SIMILAR TO: Perl-style regular expression matching
 select  first_name from customer where first_name similar to  'M%L{2}%';
 
+-- ORDER BY: sort by length descending, then title ascending for ties
 select title, length from film order by length desc, title asc;
+-- ORDER BY with function: sort by last character of title, then length descending
 select title, length from film order by right(title, 1), length desc;
 
 /* execution order in SQL:
@@ -40,7 +58,7 @@ select first_name, last_name from customer order by first_name limit 5 offset 10
 -- Non standard pagination
 select first_name, last_name from customer order by first_name offset 10 fetch next 5 rows only;
 
---Remove duplicate rows (Unique combination of columns)
+-- DISTINCT: remove duplicate result rows based on the selected columns
 select distinct customer_id from payment;
 select distinct date_part('month', payment_date) as month, date_part('year', payment_date) as year from payment order by year, month;
 
@@ -67,7 +85,7 @@ select customer_id, staff_id, count(*) from payment
 group by customer_id, staff_id 
 having count(*) > 20
 order by customer_id , staff_id;
--- Group by fist latter of user name
+-- Group by first letter of user name
 select left(first_name, 1) as first_latter, count(*) from customer
 group by left(first_name, 1)
 order by first_latter;
@@ -101,9 +119,10 @@ select
 from film
 group by 1;
 -- CASE inside aggregation function
-select sum(case when rating in ('R', 'NC-17') then 1 else 0 end) as adult_films, 
-       count(*), 
-       100.0 * sum(case when rating in ('R', 'NC-17') then 1 else 0 end) as adult_films, count(*) / count(*) as persentage
+-- CASE inside aggregation: count adult films and calculate percentage
+select sum(case when rating in ('R', 'NC-17') then 1 else 0 end) as adult_films,
+        count(*),
+        100.0 * sum(case when rating in ('R', 'NC-17') then 1 else 0 end) / count(*) as percentage
 from film;
 -- Postgres DB simplified version
 select 
@@ -116,7 +135,8 @@ select count(*) from film where rating in ('R', 'NC-17');
 -- Types in SQL
 -- Strings
 select concat(first_name, ' has email ', email) from customer where email is null;
-select first_name || ' has email ' || coalesce(email, 'unknown')from customer where email is null; 
+-- || operator with COALESCE: replaces NULL with default value (note: missing space before 'from' in original)
+select first_name || ' has email ' || coalesce(email, 'unknown') from customer where email is null; 
 select first_name || ' was created on ' || create_date from customer;
 select length(trim('   1234    '));
 select * from address where length(trim(address2)) > 0 and address2 is not null;
