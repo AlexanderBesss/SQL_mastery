@@ -30,4 +30,13 @@ The content bundle is rebuilt from the numbered lesson files by `scripts/generat
 
 ## GitHub Pages
 
-The workflow in `.github/workflows/deploy-pages.yml` tests, exports, and deploys the site whenever `main` is pushed. In the repository settings, set **Pages → Build and deployment → Source** to **GitHub Actions**.
+The workflow in `.github/workflows/deploy-pages.yml` tests, exports, and deploys the site whenever `main` is pushed.
+
+Before the first deployment, initialize Pages once:
+
+1. Open the GitHub repository.
+2. Go to **Settings → Pages**.
+3. Under **Build and deployment**, set **Source** to **GitHub Actions**.
+4. Re-run the failed workflow or push another commit.
+
+GitHub's `actions/configure-pages` action cannot perform this first-time initialization with the standard workflow token. Its automatic `enablement` option requires a separate personal access token or GitHub App token with repository administration permission, so manual initialization is the safer one-time setup.
