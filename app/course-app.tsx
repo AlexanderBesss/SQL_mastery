@@ -7,6 +7,29 @@ import { completionPercent, EMPTY_PROGRESS, loadProgress, STORAGE_KEY, toggleBoo
 
 type TrackId = typeof tracks[number]['id'];
 type Lesson = typeof lessons[number];
+type Theme = 'light' | 'dark';
+
+const THEME_KEY = 'sql-mastery-theme';
+
+function useTheme() {
+  const [theme, setTheme] = useState<Theme>('light');
+  useEffect(() => {
+    const timer = window.setTimeout(() => {
+      const stored = localStorage.getItem(THEME_KEY);
+      const initial: Theme = stored === 'light' || stored === 'dark' ? stored : matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+      setTheme(initial);
+      document.documentElement.dataset.theme = initial;
+    }, 0);
+    return () => window.clearTimeout(timer);
+  }, []);
+  const toggle = () => setTheme(current => {
+    const next = current === 'light' ? 'dark' : 'light';
+    document.documentElement.dataset.theme = next;
+    localStorage.setItem(THEME_KEY, next);
+    return next;
+  });
+  return { theme, toggle };
+}
 
 function useRoute() {
   const [route, setRoute] = useState('/');
@@ -23,12 +46,12 @@ function useProgress() {
   return { progress, save, ready };
 }
 
-function Header({ navigate, progress }: { navigate: (route: string) => void; progress: ProgressState }) {
+function Header({ navigate, progress, theme, toggleTheme }: { navigate: (route: string) => void; progress: ProgressState; theme: Theme; toggleTheme: () => void }) {
   const percent = completionPercent(progress, lessons.length);
   return <header className="site-header">
     <button className="brand" onClick={() => navigate('/')}><span className="brand-icon">S<span>Q</span>L</span><span><strong>SQL Mastery</strong><small>PostgreSQL field notes</small></span></button>
     <nav aria-label="Main navigation"><button onClick={() => navigate('/')}>Curriculum</button><button onClick={() => navigate('/review')}>Review lab</button><button onClick={() => navigate('/reference')}>SQL order</button></nav>
-    <button className="progress-chip" onClick={() => navigate('/progress')}><span>{percent}%</span><i><b style={{ width: `${percent}%` }} /></i><small>Progress</small></button>
+    <div className="header-tools"><button className="theme-toggle" onClick={toggleTheme} aria-label={`Switch to ${theme === 'light' ? 'dark' : 'light'} mode`} title={`Switch to ${theme === 'light' ? 'dark' : 'light'} mode`}><span aria-hidden="true">{theme === 'light' ? '◐' : '☀'}</span><small>{theme === 'light' ? 'Dark' : 'Light'}</small></button><button className="progress-chip" onClick={() => navigate('/progress')}><span>{percent}%</span><i><b style={{ width: `${percent}%` }} /></i><small>Progress</small></button></div>
   </header>;
 }
 
@@ -104,7 +127,7 @@ function ProgressPage({ navigate, progress, save }: { navigate: (route: string) 
 }
 
 export default function CourseApp() {
-  const { route, navigate } = useRoute(); const { progress, save, ready } = useProgress();
+  const { route, navigate } = useRoute(); const { progress, save, ready } = useProgress(); const { theme, toggle } = useTheme();
   const lesson = route.startsWith('/lesson/') ? lessons.find(item => item.id === route.slice('/lesson/'.length)) : undefined;
-  return <div className="app-shell"><Header navigate={navigate} progress={progress} />{lesson ? <LessonPage lesson={lesson} navigate={navigate} progress={progress} save={save} ready={ready} /> : route === '/review' ? <ReviewLab navigate={navigate} progress={progress} /> : route === '/reference' ? <ReferencePage navigate={navigate} /> : route === '/progress' ? <ProgressPage navigate={navigate} progress={progress} save={save} /> : <Dashboard navigate={navigate} progress={progress} />}<footer><strong>SQL Mastery</strong><p>PostgreSQL patterns for systems that have to stay correct.</p><span>{lessons.length} lessons · PostgreSQL 14+</span></footer></div>;
+  return <div className="app-shell"><Header navigate={navigate} progress={progress} theme={theme} toggleTheme={toggle} />{lesson ? <LessonPage lesson={lesson} navigate={navigate} progress={progress} save={save} ready={ready} /> : route === '/review' ? <ReviewLab navigate={navigate} progress={progress} /> : route === '/reference' ? <ReferencePage navigate={navigate} /> : route === '/progress' ? <ProgressPage navigate={navigate} progress={progress} save={save} /> : <Dashboard navigate={navigate} progress={progress} />}<footer><strong>SQL Mastery</strong><p>PostgreSQL patterns for systems that have to stay correct.</p><span>{lessons.length} lessons · PostgreSQL 14+</span></footer></div>;
 }
