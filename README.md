@@ -1,3 +1,5 @@
+[View on GitHub Pages](https://alexanderbesss.github.io/SQL_mastery/)
+
 # SQL Mastery
 
 An interactive PostgreSQL learning path for moving from schema fundamentals to production architecture, query performance, concurrency, operations, and Node.js backend interviews.
