@@ -1,0 +1,198 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Graph Databases Investigation — Overview | SQL Mastery</title>
+<meta name="description" content="An evidence-based investigation of graph databases with PostgreSQL (Apache AGE, recursive CTEs, SQL/PGQ, pgRouting) at the center: what they are, when to use them, and when not to.">
+<link rel="stylesheet" href="assets/report.css">
+</head>
+<body>
+
+<header class="top">
+  <div class="wrap">
+    <a class="brand" href="index.html">
+      <span class="brand-icon">G<i>D</i>B</span>
+      <span><b>Graph Databases Investigation</b><small>SQL Mastery · field report</small></span>
+    </a>
+    <nav>
+      <a class="current" href="index.html">Overview</a>
+      <a href="01_foundations.html">1 · Foundations</a>
+      <a href="02_postgresql_graph.html">2 · PostgreSQL</a>
+      <a href="03_use_cases.html">3 · Use cases</a>
+      <a href="04_when_not_to_use.html">4 · When NOT to use</a>
+    </nav>
+  </div>
+</header>
+
+<section class="hero">
+  <div class="wrap">
+    <p class="eyebrow">Investigation · October 2026 · PostgreSQL 13–18 · Apache AGE 1.8.0</p>
+    <h1>Graph databases,<br>without the hype.</h1>
+    <p>What a graph database actually is, why "do I need a graph DB?" is almost always the wrong
+    question, where the relationships genuinely earn a graph engine, and the specific conditions under
+    which a dedicated graph database is the correct answer. Every claim below is dated, versioned, and
+    sourced; vendor benchmarks are labeled as vendor claims.</p>
+    <p class="meta">4 parts · decision matrix · worked SQL + Cypher · sources with access dates</p>
+  </div>
+</section>
+
+<main>
+<div class="wrap">
+
+  <div class="box verdict">
+    <span class="tag">Verdicts up front</span>
+    <ol>
+      <li><strong>The honest default is: use the relational database you already have.</strong>
+      If your data lives in PostgreSQL and your traversals are one to three hops over indexed columns,
+      foreign keys plus a well-chosen index (or a recursive CTE) already give you a graph — exact,
+      transactional, explainable — before you add anything.</li>
+      <li><strong>A graph database is an OLTP-traversal tool, and its edge is <em>depth × fan-out</em>,
+      not "connections".</strong> Index-free adjacency makes each hop roughly O(1) in a native engine,
+      so cost tracks a node's degree, not the table size. That advantage only appears when queries
+      walk many hops or branch widely; a two-hop JOIN does not feel it.</li>
+      <li><strong>PostgreSQL gives you a ladder, not a fork.</strong> Recursive CTEs → <code>ltree</code>
+      / pgRouting → Apache AGE (openCypher in the same tables) →, from the SQL:2023 line, SQL/PGQ. You
+      climb it one rung at a time; you almost never have to "migrate to a graph database".</li>
+      <li><strong>Dedicated graph databases are justified by specific, checkable conditions</strong> —
+      deep traversal at high concurrency, whole-graph analytics as a product feature, graph-native
+      write patterns, or hard isolation from the OLTP system — not by the phrase "our data is
+      connected".</li>
+      <li><strong>The vendor benchmark layer here is worse than in vector search — treat every number
+      as a marketing artifact until you reproduce it.</strong> TigerGraph's "2×–8000×", Memgraph's
+      "41× lower latency", ArcadeDB's "LDBC leader" are all self-published on self-chosen setups. Run
+      LDBC SNB/Graphalytics, or your own workload, on your data.</li>
+    </ol>
+  </div>
+
+  <div class="toc">
+    <p>How to read this investigation</p>
+    <div class="cards">
+      <a class="card" href="01_foundations.html">
+        <small>Part 1</small><b>Foundations</b>
+        <span>Property graphs vs RDF, index-free adjacency, OLTP traversal vs OLAP analytics, query languages (Cypher/GQL/Gremlin/SPARQL), the LDBC benchmarks — the vocabulary the rest of the report argues with.</span>
+      </a>
+      <a class="card" href="02_postgresql_graph.html">
+        <small>Part 2</small><b>PostgreSQL &amp; graphs</b>
+        <span>Recursive CTEs, ltree, pgRouting, Apache AGE deep dive (agtype, indexes, VLE, limits), and the PostgreSQL 19 SQL/PGQ story — graphs without a second system.</span>
+      </a>
+      <a class="card" href="03_use_cases.html">
+        <small>Part 3</small><b>Use cases that hold up</b>
+        <span>Fraud/AML rings, recommendations, knowledge graphs &amp; GraphRAG, access/reachability, network and IT impact, MDM/360, lineage, routing — each with a recipe and a bail-out condition.</span>
+      </a>
+      <a class="card" href="04_when_not_to_use.html">
+        <small>Part 4</small><b>When not to use them</b>
+        <span>The strict list of cases where a dedicated graph database is the wrong tool, the anti-pattern catalog, the vendor-consolidation ledger, and the honest short list of when a dedicated engine is genuinely correct.</span>
+      </a>
+    </div>
+  </div>
+
+  <h2 id="matrix">Decision matrix — the whole investigation in one table</h2>
+  <div class="table-wrap"><table>
+    <thead><tr><th>Your situation</th><th>Correct tool</th><th>Why</th></tr></thead>
+    <tbody>
+      <tr><td>Data is in Postgres; queries are 1–3 hops over foreign keys with a filter (org charts, comments, tag graphs, BOM)</td>
+        <td><strong>Postgres JOINs, indexed</strong></td>
+        <td>Exact, transactional, explainable, already operational. A graph DB adds a second source of truth to buy a speed you don't need.</td></tr>
+      <tr><td>Variable-depth hierarchies / transitive closure on your own tables (category trees, permission rollups)</td>
+        <td><strong><code>WITH RECURSIVE</code> or <code>ltree</code></strong></td>
+        <td>Native, no extension, 100% exact. UNION (not UNION ALL) gives you cycle detection for free.</td></tr>
+      <tr><td>You want Cypher-style pattern matching and a property-graph model, data already in Postgres, deep-ish traversals at moderate scale</td>
+        <td><strong>Postgres + Apache AGE (1.8.x)</strong></td>
+        <td>One system: ACID, joins across SQL and Cypher, RLS, backups come free. It's still Postgres under the hood (relational joins + indexes), so mind deep-hop cost.</td></tr>
+      <tr><td>Routing / shortest-path / network analysis over a geometric or edge table in Postgres</td>
+        <td><strong>pgRouting (4.0)</strong></td>
+        <td>Dijkstra, A*, driving-distance, TSP as SQL functions over ordinary edge tables. No graph DB required.</td></tr>
+      <tr><td>You want standard SQL graph syntax over existing tables, and can wait</td>
+        <td><strong>SQL/PGQ — but not in GA yet (as of Oct 2026)</strong></td>
+        <td><code>CREATE PROPERTY GRAPH</code>/<code>GRAPH_TABLE</code> reached PG 19 beta and was <em>reverted</em> 2026-09-07; the Nov 2026 GA ships without it. Plan for v20.</td></tr>
+      <tr><td>Deep traversal (many hops / wide fan-out) at high concurrent QPS, as the product's core path</td>
+        <td><strong>Native graph DB (Neo4j, Memgraph, TigerGraph…)</strong></td>
+        <td>Index-free adjacency makes depth cheap; the OLTP engines optimize exactly this. Measure your own hop profile first.</td></tr>
+      <tr><td>Whole-graph analytics (PageRank, communities, connected components) as a feature</td>
+        <td><strong>Graph analytics platform (Neo4j GDS, TigerGraph, Neptune Analytics) or in-process (NetworkX, Graph-tool)</strong></td>
+        <td>OLAP over the whole graph is a different problem from OLTP traversal; a transactional store is rarely the right place to run it.</td></tr>
+      <tr><td>Retrieval for an LLM that must reason over relationships (GraphRAG)</td>
+        <td><strong>Graph (often + vectors) — Neo4j graphrag, LlamaIndex, Microsoft GraphRAG, LightRAG</strong></td>
+        <td>Explicit relationships give multi-hop context and explainability similarity search can't. Indexing cost is 10–1000× basic RAG; use it where aggregation is the point.</td></tr>
+      <tr><td>Billions of relationships, petabyte scale, distributed compute mandatory</td>
+        <td><strong>Distributed MPP graph (TigerGraph, NebulaGraph, GraphScope)</strong></td>
+        <td>Single-machine native stores hit memory/hop walls here; sharded MPP keeps latency stable at depth (vendor claim — verify).</td></tr>
+    </tbody>
+  </table></div>
+
+  <h2 id="numbers">Key numbers this report relies on</h2>
+  <div class="table-wrap"><table>
+    <thead><tr><th>Fact</th><th>Value (as of Oct 2026)</th><th>Source</th></tr></thead>
+    <tbody>
+      <tr><td>Latest Apache AGE release</td><td>1.8.0 (ASF catalog 2026-08-06); supports PostgreSQL 11–18 (PG18 branch); 1.7.0 (Jan 2026) added RLS + id-column indexes</td><td>apache/age release notes + Apache release catalog</td></tr>
+      <tr><td>AGE per-graph scale ceiling</td><td>281,474,976,710,655 (2⁴⁸−1) combined vertices + edges <em>per graph</em>; multiple graphs allowed</td><td>Apache AGE FAQ</td></tr>
+      <tr><td>PostgreSQL 19 SQL/PGQ status</td><td><code>CREATE PROPERTY GRAPH</code> / <code>GRAPH_TABLE</code> in PG 19 betas, <strong>reverted 2026-09-07</strong>; GA planned 2026-11-19 <em>without</em> SQL/PGQ</td><td>PostgreSQL 19 release notes (beta tag) + revert threads; DevOps Daily revert ledger</td></tr>
+      <tr><td>SQL/PGQ standard</td><td>ISO/IEC 9075-16:2023, part of SQL:2023</td><td>ISO catalog</td></tr>
+      <tr><td>GQL standard</td><td>ISO/IEC 39075:2024 published; Technical Corrigendum 1 (2026-07); Edition 2 CD in development</td><td>ISO catalog + Neo4j GQL conformance docs</td></tr>
+      <tr><td>Neo4j release line</td><td>Calendar versioning (e.g. 2026.07.1, Aug 2026); Cypher 25 the default query language; vector index gained binary quantization + rescoring (2026.07)</td><td>Neo4j release notes / 2026 changelog</td></tr>
+      <tr><td>Native "index-free adjacency" claim</td><td>Neo4j: ~50 M traversals/sec, ~1 M writes/sec, "over a trillion records"; Friendster 1.8 B relationships loaded in ~20 min</td><td>Neo4j engineering blog (vendor figures — verify on your data)</td></tr>
+      <tr><td>Kuzu embedded graph DB status</td><td>Archived 2025-10-10 after Apple acquired Kùzu Inc (deal 2025-10-09); final release 0.11.3; community forks: LadybugDB, Bighorn, RyuGraph, Vela, pg_ladybug</td><td>kuzudb/kuzu GitHub; The Register; GDB-Engines lineage</td></tr>
+      <tr><td>pgRouting</td><td>4.0 manual (updated 2026-09-05): Dijkstra, A*, driving-distance, K-shortest-path, TSP as SQL functions</td><td>pgRouting manual</td></tr>
+      <tr><td>Vendor benchmark spread</td><td>TigerGraph "2×–8000×", Memgraph "up to 41× lower latency", ArcadeDB LDBC leader — all self-published</td><td>Vendor sites (labeled as vendor claims; not benchmark-graded)</td></tr>
+    </tbody>
+  </table></div>
+
+  <div class="box claim">
+    <span class="tag">Reading graph benchmarks honestly</span>
+    <p>The graph-database benchmark layer is dominated by vendors benchmarking themselves. Example:
+    ArcadeDB's widely-shared LDBC Graphalytics table (PageRank 0.48 s vs "Neo4j 2026" 11.15 s) is
+    published on ArcadeDB's own site, run on ArcadeDB's chosen setup, with "Neo4j 2026" left
+    unspecified; Memgraph's "41× lower latency" uses a self-run whitepaper; TigerGraph's "2×–8000×" is
+    a 2018-era report that's still in circulation. Directionally, they say "architecture and depth
+    matter"; none of them is a constant you can deploy on. Reproduce on your graph — LDBC SNB for
+    pattern matching, LDBC Graphalytics for analytics — before you choose an engine on a number.</p>
+  </div>
+
+  <h2 id="scope">Scope and method</h2>
+  <p>This is an engineering investigation, not a product review. Research window: October 2026.
+  Primary sources checked directly: the Apache AGE README, release notes and FAQ (v1.8.0); PostgreSQL 19
+  release notes and the <code>docs/19</code> Property Graph / Graph Query sections (and the mailing-list
+  revert threads for SQL/PGQ); the pgRouting 4.0 manual; ISO catalog entries for GQL (ISO/IEC 39075)
+  and SQL/PGQ (ISO/IEC 9075-16); Neo4j Cypher/GQL-conformance docs and 2026 release notes; and the Kuzu
+  archival notice plus fork lineage. Secondary sources are blog- and vendor-grade and are cited as such.</p>
+  <p>It sits alongside this repository's <code>vector_databases/</code> report. Where that report argued
+  "vectors are columns; use Postgres first," this one argues the same for relationships:
+  <em>edges are foreign keys, and a graph is a query shape — not necessarily a second database.</em>
+  The two meet in GraphRAG (Part 3 §3), where graph retrieval and vector retrieval are the same
+  retrieval problem from two ends.</p>
+
+  <h2 id="sources">Sources</h2>
+  <ol class="small">
+    <li>Apache AGE README, release notes &amp; FAQ — github.com/apache/age, age.apache.org (accessed 2026-10-19; v1.8.0; PG 11–18; 2⁴⁸−1 element ceiling; "uses PostgreSQL's indexes / relational model under the hood").</li>
+    <li>Apache AGE issue #2349, "Docs: clarify VLE semantics and cost model" (Mar 2026) — VLE edge-isomorphism vs vertex-isomorphism, path explosion on cycle-rich graphs, recursive-CTE workaround.</li>
+    <li>Apache release catalog (release-catalog.apache.org) — AGE 1.8.0 released 2026-08-06; 1.7.0 2026-02; 1.6.0 2025-09.</li>
+    <li>PostgreSQL 19 release notes (<code>/docs/release/19.0</code>) and dev docs <code>/docs/19/ddl-property-graphs</code>, <code>/docs/19/queries-graph</code> — SQL/PGQ <code>CREATE PROPERTY GRAPH</code>/<code>GRAPH_TABLE</code>; conforms to ISO/IEC 9075-16.</li>
+    <li>DevOps Daily, "Postgres 19 Slipped to November: Every Pulled Feature and Why" (2026-10-17) and Eisentraut, "The reverts will continue until morale improves" (2026-10-09) — SQL/PGQ reverted 2026-09-07; GA 2026-11-19 without it.</li>
+    <li>The Register, "PostgreSQL 19 connects the dots with standardized graph queries" (2026-09-04) — Percona's Alastair Turner on SQL/PGQ in PG 19 and indexing still needing to catch up.</li>
+    <li>ISO catalog — ISO/IEC 39075:2024 (GQL) + Cor. 1:2026; ISO/IEC 9075-16:2023 (SQL/PGQ).</li>
+    <li>Neo4j — Cypher manual "GQL conformance", GQL standard blog, 2026 release notes &amp; changelog (Cypher 25 default; vector-index binary quantization); "index-free adjacency" engineering posts.</li>
+    <li>pgRouting manual (4.0, 2026-09) — pgr_dijkstra, pgr_aStar, drivingDistance, TSP families.</li>
+    <li>Kuzu — kuzudb/kuzu GitHub archive (2025-10-10); The Register "KuzuDB says so long…"; GDB-Engines lineage (LadybugDB, Bighorn, RyuGraph, Vela, pg_ladybug, NeuG); BetaKit/DM disclosure on the Apple acquisition (deal 2025-10-09).</li>
+    <li>GraphRAG — Neo4j GraphRAG (neo4j-graphrag) docs &amp; Labs; LlamaIndex PropertyGraphIndex; sanzgiri/patterns GraphRAG notes (Microsoft GraphRAG, LightRAG, Nano-GraphRAG); UltRAG (arXiv 2026).</li>
+    <li>Landscape &amp; benchmarks (2026, vendor-graded): tigergraph.com buyer's guide; arcadedb.com LDBC/LSQB pages; memgraph.com benchmarks &amp; "PostgreSQL 19 vs Memgraph"; Amazon Neptune/Neptune Analytics docs.</li>
+    <li>Academic framing — ACM Computing Surveys "Demystifying Graph Databases" (2023); arXiv "Graph Databases from an Industry Perspective" (2022); DuckPGQ (CIDR 2023) for embedded SQL/PGQ.</li>
+  </ol>
+
+  <div class="pager">
+    <span></span>
+    <a class="next" href="01_foundations.html">Part 1 — Foundations →</a>
+  </div>
+
+</div>
+</main>
+
+<footer class="site-foot">
+  <div class="wrap">
+    <span>Graph Databases Investigation — part of the SQL Mastery repository.</span>
+    <span>Written October 2026 · verify versions before acting on specifics.</span>
+  </div>
+</footer>
+
+</body>
+</html>

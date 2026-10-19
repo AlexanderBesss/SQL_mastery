@@ -51,7 +51,7 @@ function Header({ navigate, progress, theme, toggleTheme }: { navigate: (route: 
   const percent = completionPercent(progress, lessons.length);
   return <header className="site-header">
     <button className="brand" onClick={() => navigate('/')}><span className="brand-icon">S<span>Q</span>L</span><span><strong>SQL Mastery</strong><small>PostgreSQL field notes</small></span></button>
-    <nav aria-label="Main navigation"><button onClick={() => navigate('/')}>Curriculum</button><button onClick={() => navigate('/review')}>Review lab</button><button onClick={() => navigate('/reference')}>SQL order</button><Link href="/vector-databases/">Vector report</Link></nav>
+    <nav aria-label="Main navigation"><button onClick={() => navigate('/')}>Curriculum</button><button onClick={() => navigate('/review')}>Review lab</button><button onClick={() => navigate('/reference')}>SQL order</button><Link href="/vector-databases/">Vector report</Link><Link href="/graph-databases/">Graph report</Link></nav>
     <div className="header-tools"><button className="theme-toggle" onClick={toggleTheme} aria-label={`Switch to ${theme === 'light' ? 'dark' : 'light'} mode`} title={`Switch to ${theme === 'light' ? 'dark' : 'light'} mode`}><span aria-hidden="true">{theme === 'light' ? '◐' : '☀'}</span><small>{theme === 'light' ? 'Dark' : 'Light'}</small></button><button className="progress-chip" onClick={() => navigate('/progress')}><span>{percent}%</span><i><b style={{ width: `${percent}%` }} /></i><small>Progress</small></button></div>
   </header>;
 }

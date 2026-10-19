@@ -11,6 +11,15 @@ HTML investigation of vector databases centered on PostgreSQL + pgvector — fou
 engineering manual, the use cases that hold up, and a strict guide to when *not* to use them.
 Open `vector_databases/index.html` in a browser.
 
+## Graph databases investigation
+
+A second standalone research section lives in [`graph_databases/`](graph_databases/README.md): a
+four-part HTML investigation of graph databases centered on PostgreSQL's graph ladder — recursive CTEs,
+`ltree`, pgRouting, and Apache AGE, plus the GQL/SQL/PGQ standards (including PostgreSQL 19's reverted
+SQL/PGQ, as of October 2026) — foundations, a full AGE engineering manual, the use cases that hold up,
+and a strict guide to when *not* to use a dedicated graph database.
+Open `graph_databases/index.html` in a browser.
+
 ## Learning experience
 
 - 35 complete lessons generated from the repository's existing technical notes

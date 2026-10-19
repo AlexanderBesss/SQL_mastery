@@ -1,0 +1,232 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Part 1 — Foundations: property graphs, traversals, standards | Graph Databases Investigation</title>
+<meta name="description" content="What a graph database actually is: the labeled property graph vs RDF, index-free adjacency, OLTP traversal vs OLAP analytics, Cypher/GQL/Gremlin/SPARQL, and the LDBC benchmarks.">
+<link rel="stylesheet" href="assets/report.css">
+</head>
+<body>
+
+<header class="top">
+  <div class="wrap">
+    <a class="brand" href="index.html">
+      <span class="brand-icon">G<i>D</i>B</span>
+      <span><b>Graph Databases Investigation</b><small>SQL Mastery · field report</small></span>
+    </a>
+    <nav>
+      <a href="index.html">Overview</a>
+      <a class="current" href="01_foundations.html">1 · Foundations</a>
+      <a href="02_postgresql_graph.html">2 · PostgreSQL</a>
+      <a href="03_use_cases.html">3 · Use cases</a>
+      <a href="04_when_not_to_use.html">4 · When NOT to use</a>
+    </nav>
+  </div>
+</header>
+
+<section class="hero">
+  <div class="wrap">
+    <p class="eyebrow">Part 1 of 4 · Foundations</p>
+    <h1>What a "graph database"<br>actually is.</h1>
+    <p>Strip the branding and a graph database does one job: store connections as first-class objects
+    and follow them fast. Whether that beats your existing relational engine is decided by two numbers —
+    how <em>deep</em> your queries walk and how <em>wide</em> they branch — and by whether you are asking
+    a transactional question or an analytical one.</p>
+  </div>
+</section>
+
+<main>
+<div class="wrap">
+
+  <div class="toc">
+    <p>Contents</p>
+    <ol>
+      <li><a href="#model">The labeled property graph (and RDF)</a></li>
+      <li><a href="#adjacency">Index-free adjacency: where the speed claim really lives</a></li>
+      <li><a href="#oltp">OLTP traversal vs OLAP analytics: two different products</a></li>
+      <li><a href="#languages">Query languages: Cypher, GQL, Gremlin, SPARQL, SQL/PGQ</a></li>
+      <li><a href="#natives">Native vs non-native: a marketing axis worth decoding</a></li>
+      <li><a href="#bench">Evaluation: how to measure graphs honestly (LDBC)</a></li>
+      <li><a href="#glossary">Working glossary</a></li>
+    </ol>
+  </div>
+
+  <h2 id="model">1 · The labeled property graph (and RDF)</h2>
+  <p>Two data models dominate "graph" work. The <strong>labeled property graph (LPG)</strong> — nodes and
+  directed edges, each with a label/type and arbitrary key–value properties — is what Neo4j, Memgraph,
+  TigerGraph, Neptune (property mode), and Apache AGE implement. The <strong>RDF</strong> model expresses
+  everything as <em>subject–predicate–object</em> triples with URIs, is W3C-standardized, and is queried
+  with SPARQL; its home is semantic-web / knowledge-base work (GraphDB, Stardog, AllegroGraph, Jena).</p>
+
+  <div class="table-wrap"><table>
+    <thead><tr><th>Dimension</th><th>Labeled property graph</th><th>RDF</th></tr></thead>
+    <tbody>
+      <tr><td>Basic unit</td><td>Node and edge, both carry labels + properties</td><td>Triple (s, p, o); literals or URIs</td></tr>
+      <tr><td>Edge properties</td><td>First-class: <code>(a)-[:WORKS_FOR {since: 2019}]-&gt;(b)</code></td><td>Awkward: reification or RDF-star; each attribute can become its own triple</td></tr>
+      <tr><td>Modeling bias</td><td>Vertex-centric; fold attributes into nodes/edges → fewer elements</td><td>Everything is a node/triple → more elements, but URIs link across datasets</td></tr>
+      <tr><td>Assumption</td><td>Closed world: absence is usually "false"</td><td>Open-world: absence is "unknown"; reasoning (RDFS/OWL) can infer facts</td></tr>
+      <tr><td>Language</td><td>Cypher / GQL / Gremlin / GSQL / openCypher</td><td>SPARQL</td></tr>
+      <tr><td>Typical home</td><td>Fraud, recommendations, IT/ops, access, apps</td><td>Government/biomedical knowledge bases, interoperability, ontologies</td></tr>
+    </tbody>
+  </table></div>
+
+  <p>Rule of thumb: <strong>an LPG property that RDF would need a triple for</strong> is the practical
+  difference. The "same fact, fewer elements" property is why app teams on a transactional workload pick
+  LPG, while cross-org knowledge interchange and inference push toward RDF. Both are "graphs"; picking
+  the wrong model for the job is a separate mistake from picking wrong between graph and relational.</p>
+
+  <h2 id="adjacency">2 · Index-free adjacency: where the speed claim really lives</h2>
+  <p>A relational engine answers a connection by <strong>joining</strong>: look up foreign keys in a
+  B-tree (≈ O(log n) per probe), intersect sets, and pay again for every hop. A native graph engine stores
+  each node's incident relationships as direct references, so following an edge is a pointer dereference —
+  the classic fetch-execute primitive. This is <em>index-free adjacency</em>: the cost of a local traversal
+  depends on the <strong>degree of the nodes you touch, not the total number of nodes in the graph</strong>.</p>
+
+  <div class="table-wrap"><table>
+    <thead><tr><th>Operation</th><th>Relational (indexed JOIN)</th><th>Native traversal (index-free adjacency)</th></tr></thead>
+    <tbody>
+      <tr><td>One hop</td><td>O(log n) B-tree probe per row matched</td><td>~O(1) pointer dereference per incident edge</td></tr>
+      <tr><td>k hops</td><td>Cost compounds per JOIN; grows with table size</td><td>Grows with the branching frontier (Σ degrees), largely independent of graph size</td></tr>
+      <tr><td>Whole-scan of an attribute</td><td>B-tree/GIN index is the right tool</td><td>You still need a label/property index to <em>find</em> the starting node</td></tr>
+    </tbody>
+  </table></div>
+
+  <div class="box claim">
+    <span class="tag">Vendor framing, decoded</span>
+    <p>The strongest version of this claim comes from Neo4j, and it is a vendor claim: "…traversals at
+    cost O(1) per hop… non-native systems pay global-index lookups O(log N)… 6–15× more I/O for even
+    modest graphs," alongside "50 M traversals/sec, 1 M writes/sec, over a trillion records." Directionally
+    this is standard database theory — pointer chase beats B-tree probe per hop — and the ACM Computing
+    Surveys taxonomy ("Demystifying Graph Databases", 2023) describes the same adjacency-list/direct-pointer
+    design space without the marketing. It only matters once your queries actually chain hops; see §3.</p>
+  </div>
+
+  <div class="box warn">
+    <span class="tag">Two ways index-free adjacency bites back</span>
+    <ul>
+      <li><strong>Supernodes.</strong> A node with millions of edges (a celebrity account, a default
+      "unknown customer") makes every traversal through it O(degree). Every graph engine needs special
+      handling here; every graph model should avoid creating them accidentally.</li>
+      <li><strong>Cycle-rich variable-length paths.</strong> A pattern like <code>(a)-[*1..6]-&gt;(b)</code>
+      on a cyclic graph enumerates combinatorially many edge-unique paths. Apache AGE's own regression
+      suite has a 5-vertex cycle-rich graph that yields ~7,000 undirected paths for <code>[*1..∞]</code> —
+      expected openCypher semantics, explosive cost.</li>
+    </ul>
+  </div>
+
+  <h2 id="oltp">3 · OLTP traversal vs OLAP analytics: two different products</h2>
+  <p>People say "we need graph analytics" and mean one of two opposite things:</p>
+  <ul>
+    <li><strong>Operational (OLTP) traversal.</strong> Start at a known node, explore a bounded
+    neighborhood, answer "who/what is connected to this, within N hops?" — sub-millisecond to a few ms,
+    high concurrency, point reads/writes. This is what transactional graph databases (Neo4j, Memgraph,
+    Neptune Database, AGE) are built for.</li>
+    <li><strong>Analytical (OLAP) whole-graph computation.</strong> PageRank, weakly connected components,
+    Louvain/Leiden communities, BFS/SSSP/CDLP over <em>every</em> vertex — minutes-to-hours batch or
+    near-real-time analytics, not per-request. This is what graph analytics platforms (Neo4j GDS,
+    TigerGraph, Neptune Analytics) and in-process libraries (NetworkX, Graph-tool, igraph) are for.</li>
+  </ul>
+  <p>Decide which question you're answering before picking an engine, because the failure mode of the
+  whole category is buying an OLTP store and running OLAP scans on it (or shipping an app whose "analytics"
+  is a full-graph query on the request path). A single-node graph database is not a distributed analytics
+  system, and an analytics cluster is not your login-path OLTP store.</p>
+
+  <h2 id="languages">4 · Query languages: Cypher, GQL, Gremlin, SPARQL, SQL/PGQ</h2>
+  <div class="table-wrap"><table>
+    <thead><tr><th>Language</th><th>Style</th><th>Standard / body</th><th>Who speaks it</th></tr></thead>
+    <tbody>
+      <tr><td><strong>Cypher</strong></td><td>Declarative, ASCII-art patterns <code>(a)-[:R]-&gt;(b)</code></td><td>Proprietary (Neo4j); openCypher is the community spec</td><td>Neo4j, Memgraph, ArcadeDB, Kuzu-lineage, AGE (subset)</td></tr>
+      <tr><td><strong>GQL</strong></td><td>Declarative; Cypher-derived</td><td><strong>ISO/IEC 39075:2024</strong> (Cor. 1 2026; Ed. 2 CD in progress)</td><td>Neo4j (near-conformant), TigerGraph, others converging</td></tr>
+      <tr><td><strong>openCypher</strong></td><td>Open specification of the Cypher dialect</td><td>openCypher project (OIN)</td><td>Multiple vendors; AGE implements a subset</td></tr>
+      <tr><td><strong>Gremlin</strong></td><td>Imperative/traversal steps <code>g.V()....</code> (also has a query form)</td><td>Apache TinkerPop (de facto, not ISO)</td><td>Neptune, JanusGraph, older stacks</td></tr>
+      <tr><td><strong>GSQL</strong></td><td>SQL-flavored + accumulators</td><td>Proprietary (TigerGraph); also supports openCypher/GQL</td><td>TigerGraph</td></tr>
+      <tr><td><strong>SPARQL</strong></td><td>Graph-pattern + join over triples</td><td>W3C</td><td>RDF stores (GraphDB, Jena, Stardog…)</td></tr>
+      <tr><td><strong>SQL/PGQ</strong></td><td>Graph patterns <em>inside</em> SQL <code>GRAPH_TABLE(...)</code></td><td><strong>ISO/IEC 9075-16:2023</strong> (SQL:2023)</td><td>Oracle; PostgreSQL 19 <em>attempted and reverted</em>; DuckDB via DuckPGQ</td></tr>
+    </tbody>
+  </table></div>
+
+  <div class="box note">
+    <span class="tag">Standards are real now — read the fine print</span>
+    <p>In 2024 ISO published <strong>GQL</strong> (a full database language for property graphs, mostly
+    Cypher-shaped), and 2023 added <strong>SQL/PGQ</strong> to the SQL standard (property graphs as
+    read-only views over relational tables). So "vendor lock-in via language" is weaker than it was —
+    Cypher skills transfer to GQL, and SQL/PGQ is standard SQL. But conformance is uneven: Neo4j supports
+    "most mandatory" GQL features, AGE is an openCypher <em>subset</em> (see Part 2), and "supports GQL"
+    on a vendor page ≠ your queries port verbatim. Read the conformance matrix, not the press release.</p>
+  </div>
+
+  <h2 id="natives">5 · Native vs non-native: a marketing axis worth decoding</h2>
+  <p>"Native graph" is mostly a Neo4j-coined marketing term for "we built our own storage engine around
+  index-free adjacency, so hops are pointer chases." The kernel of truth: the storage layout matters, and
+  bolt-on graph layers over a general storage engine pay more per hop. The honest counterpoints:</p>
+  <ul>
+    <li><strong>Relational engines are graph engines with a different layout.</strong> Postgres with
+    indexed FKs is a graph store queried via joins; <code>ltree</code>, recursive CTEs, and pgRouting
+    do genuine graph work on genuinely relational storage. DuckDB's <code>DuckPGQ</code> (CIDR 2023)
+    reports competitive graph-query performance in an embedded OLAP engine.</li>
+    <li><strong>Apache AGE is "non-native" by design</strong> — it maps Cypher onto Postgres tables and
+    Postgres indexes. It wins on integration and exactness; it can lose on very deep traversals, which is
+    a fair, disclosed tradeoff (Part 2 §5), not a defect to hide.</li>
+    <li>ArangoDB, ArcadeDB, and multi-model stores explicitly hybrid: adjacency structures + general
+    indexes, trading some hop cost for multi-model convenience.</li>
+  </ul>
+  <p>Don't filter vendors on "native". Filter on: hop cost at <em>your</em> depth, concurrency, memory
+  footprint, operational model, licensing, and whether your data can live there as the source of truth.</p>
+
+  <h2 id="bench">6 · Evaluation: how to measure graphs honestly (LDBC)</h2>
+  <p>Graph queries are <strong>exact</strong> — there is no recall dial like ANN has. The axes are
+  latency-vs-hop-depth, throughput, memory, and correctness. The neutral harnesses:</p>
+  <ol>
+    <li><strong>LDBC Social Network Benchmark (SNB)</strong> + <strong>LSQB</strong>: pattern-matching /
+    interactive queries over a synthetic social graph at scale factors (SF1 ≈ 3.9 M vertices / 17.9 M
+    edges upward). Measures the OLTP side.</li>
+    <li><strong>LDBC Graphalytics</strong>: six whole-graph algorithms (PageRank, WCC, SSSP, LCC, BFS,
+    CDLP) on standard datasets. Measures the OLAP side.</li>
+    <li><strong>Your own workload</strong>: your degree distribution, your hop depths, your filters,
+    your write pattern. Load a real slice and run your three worst queries. This beats any published
+    table.</li>
+  </ol>
+  <div class="box warn">
+    <span class="tag">This category's benchmarks are propaganda</span>
+    <p>Almost every circulating graph-database number is self-published by the vendor it flatters:
+    TigerGraph "2×–8000× faster" (2018 report), Memgraph "up to 41× lower latency / 3–8× faster",
+    ArcadeDB "first on every Graphalytics algorithm" with an unspecified "Neo4j 2026". They agree on one
+    thing (architecture and depth matter) and disagree on everything else. If a decision hangs on a
+    number, run LDBC or your own data — or don't cite the number.</p>
+  </div>
+
+  <h2 id="glossary">7 · Working glossary</h2>
+  <div class="table-wrap"><table>
+    <thead><tr><th>Term</th><th>Meaning in this report</th></tr></thead>
+    <tbody>
+      <tr><td>Property graph (LPG)</td><td>Nodes/edges with labels and key–value properties; the dominant model in OLTP graph DBs.</td></tr>
+      <tr><td>RDF / triple store</td><td>Subject–predicate–object model (W3C); SPARQL; strong for interoperability and inference.</td></tr>
+      <tr><td>Index-free adjacency</td><td>Nodes reference adjacent edges directly; hop cost tracks degree, not graph size.</td></tr>
+      <tr><td>Supernode</td><td>A vertex with an extreme degree; the standard worst case for traversal engines.</td></tr>
+      <tr><td>VLE (variable-length edges)</td><td>Path patterns like <code>[*1..k]</code>; powerful, and expensive on cycle-rich graphs.</td></tr>
+      <tr><td>Graph OLTP / OLAP</td><td>Per-request neighborhood traversal vs whole-graph batch computation. Different products.</td></tr>
+      <tr><td>GQL / SQL/PGQ / openCypher</td><td>The standard graph language (ISO 39075), the SQL-embedded graph pattern (ISO 9075-16), and the open Cypher spec.</td></tr>
+      <tr><td>LDBC SNB / Graphalytics / LSQB</td><td>The neutral benchmark families: interactive pattern matching, whole-graph algorithms, pattern matching at scale.</td></tr>
+      <tr><td>GraphRAG</td><td>RAG where retrieval walks a knowledge graph (often seeded by vector search); multi-hop context + explainability.</td></tr>
+      <tr><td>Dual store</td><td>Primary DB is source of truth; a graph DB holds a derived projection kept in sync. See Part 4 §5.</td></tr>
+    </tbody>
+  </table></div>
+
+  <div class="pager">
+    <a href="index.html">← Overview</a>
+    <a class="next" href="02_postgresql_graph.html">Part 2 — PostgreSQL &amp; graphs →</a>
+  </div>
+
+</div>
+</main>
+
+<footer class="site-foot">
+  <div class="wrap">
+    <span>Graph Databases Investigation · Part 1 · Sources listed on the <a href="index.html#sources">overview page</a>.</span>
+    <span>Apache AGE 1.8.0 · PostgreSQL 13–18 · October 2026</span>
+  </div>
+</footer>
+
+</body>
+</html>

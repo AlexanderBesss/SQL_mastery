@@ -1,0 +1,231 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Part 3 — Use cases that hold up | Graph Databases Investigation</title>
+<meta name="description" content="The legitimate use cases for graph technology — fraud rings, GraphRAG, recommendations, access control, impact analysis, entity resolution, lineage, routing — each with a recipe, strict caveats, and a bail-out condition.">
+<link rel="stylesheet" href="assets/report.css">
+</head>
+<body>
+
+<header class="top">
+  <div class="wrap">
+    <a class="brand" href="index.html">
+      <span class="brand-icon">G<i>D</i>B</span>
+      <span><b>Graph Databases Investigation</b><small>SQL Mastery · field report</small></span>
+    </a>
+    <nav>
+      <a href="index.html">Overview</a>
+      <a href="01_foundations.html">1 · Foundations</a>
+      <a href="02_postgresql_graph.html">2 · PostgreSQL</a>
+      <a class="current" href="03_use_cases.html">3 · Use cases</a>
+      <a href="04_when_not_to_use.html">4 · When NOT to use</a>
+    </nav>
+  </div>
+</header>
+
+<section class="hero">
+  <div class="wrap">
+    <p class="eyebrow">Part 3 of 4 · Where graphs earn their keep</p>
+    <h1>Eight use cases<br>that survive scrutiny.</h1>
+    <p>Each entry states the <em>signal</em> that it's genuinely a graph problem, the recipe (usually in
+    Postgres, sometimes a dedicated engine), the strict caveat, and the <em>bail-out condition</em> — the
+    point at which the honest answer stops being "make it a graph". Read the bail-outs as part of the use
+    case.</p>
+  </div>
+</section>
+
+<main>
+<div class="wrap">
+
+  <div class="box rule">
+    <span class="tag">The admission test — run every idea through it</span>
+    <ol>
+      <li>Can you name the query that <em>chains relationships</em> — and how deep and wide it goes?
+      "Friends of friends who share a device with a sanctioned entity" is graph-shaped; "this customer's
+      orders" is a foreign key. If you can't state hop depth and fan-out, you can't justify a graph engine.</li>
+      <li>Is the relationship itself a <em>domain fact with properties and time</em> (who transferred what
+      to whom, when, how much)? If relationships are just foreign keys between typed records, relational
+      modeling is not a compromise — it's the right answer.</li>
+      <li>Is traversal on the critical path at concurrency (OLTP), or is the work whole-graph computation
+      (OLAP)? The two answer sets are different engines. All eight cases below pass at least one test in
+      Postgres itself — which is the point.</li>
+    </ol>
+  </div>
+
+  <h2 id="uc1">1 · Fraud rings, AML, and fraud-network detection</h2>
+  <p><strong>Signal:</strong> the fraud is in the <em>shape</em> — mule chains, ring topologies, accounts
+  sharing devices/addresses/payment instruments, circular transfers. <strong>Why graphs:</strong> "find
+  accounts within 3 transfers of a confirmed mule that share a device with ≥2 flagged accounts" is a
+  bounded-depth pattern match; in SQL it's a join pile-up nobody maintains.</p>
+  <pre><code>-- Apache AGE: shape detection (Postgres stays the system of record)
+SELECT * FROM cypher('fraud', $$
+  MATCH (s:Suspect)-[:TRANSFERS_TO*1..3]-&gt;(a:Account)
+  WHERE NOT a.flagged
+  WITH a WHERE size([(a)&lt;-[:USES_DEVICE]-(o:Account)-[:USES_DEVICE]-&gt;(b:Account)
+                     WHERE b &lt;&gt; a | collect(b)]) &gt;= 2
+  RETURN a.id
+$$) AS (id agtype);</code></pre>
+  <p><strong>Strict caveats:</strong> batch risk-scoring algorithms (PageRank-style money flow, community
+  detection) are OLAP — run them off the request path (GDS-class tools, or extract edges to graph-tool /
+  NetworkX / Spark GraphFrames). Thresholds and features need labeled outcomes or you're shipping noise.
+  Supernodes (shared Wi-Fi in an apartment block, payment intermediaries) dominate latency and false
+  positives; model them out of the traversal.</p>
+  <p><strong>Bail-out:</strong> single-account rules ("velocity &gt; X") — that's a feature on a row, do it
+  in SQL. Graphs enter when cross-account <em>structure</em> carries the signal.</p>
+
+  <h2 id="uc2">2 · Knowledge graphs and GraphRAG</h2>
+  <p><strong>Signal:</strong> an LLM (or a human) must answer multi-hop questions over your corpus:
+  "which supplier risks affect the product family owned by this account?" Vector RAG returns similar
+  chunks; the graph returns the <em>path</em> between entities, with provenance. The 2024–2026 pattern
+  stack: Microsoft GraphRAG (extract entities/relations with an LLM at index time, Leiden community
+  detection, hierarchical summaries), Neo4j's <code>neo4j-graphrag</code> pipeline + Text2Cypher,
+  LlamaIndex <code>PropertyGraphIndex</code>, cheaper variants (LightRAG, Nano-GraphRAG).</p>
+  <div class="box claim"><span class="tag">Hype check — where graph and vector reports meet</span>
+    <p>GraphRAG's indexing cost is the honest headline: community write-ups put LLM extraction +
+    summarization at ~10–1000× basic-RAG embedding cost per chunk ($0.01–0.10/chunk vs ~$0.0001), plus a
+    graph store to operate. The retrieval-quality win concentrates in <em>aggregation and multi-hop</em>
+    questions; for "what does the policy say about X", hybrid vector+FTS RAG already works. Route to the
+    graph when the question needs the path, not the passage. (This is the same conclusion the vector
+    report reached from the other side: retrieval is a pipeline, not a product.)</p>
+  </div>
+  <p><strong>Strict caveats:</strong> LLM-extracted graphs are noisy — entity dedup, relation typing, and
+  schema enforcement (<code>enforce_schema</code> / SHACL on RDF) are the hard 80% of the work. Keep source
+  chunk provenance on every edge or you've built a hallucination amplifier with nice visuals.</p>
+  <p><strong>Bail-out:</strong> flat corpora, single-hop lookups — the vector-databases report covers it;
+  don't bolt a knowledge graph onto retrieval that never composes.</p>
+
+  <h2 id="uc3">3 · Recommendations and co-occurrence ("also bought", "also viewed")</h2>
+  <p><strong>Signal:</strong> "customers who bought this also bought…" — the graph is
+  <code>(p1)-[:PURCHASED_WITH {count, window}]-&gt;(p2)</code>, built offline from baskets. Graph form makes
+  constraints cheap: filter by margin, stock, and category in the same pattern.</p>
+  <pre><code>-- Postgres materializes the edge table; traversal is an index hit
+WITH co AS (
+  SELECT b.product_id AS rec, count(*) AS strength
+  FROM   order_items a
+  JOIN   order_items b ON a.order_id = b.order_id AND a.product_id &lt;&gt; b.product_id
+  WHERE  a.product_id = :product AND a.ordered_at &gt; now() - interval '90 days'
+  GROUP  BY 1 ORDER BY strength DESC LIMIT 20
+)
+SELECT p.* FROM co JOIN products p USING (product_id)
+WHERE  p.in_stock IS TRUE ORDER BY strength DESC LIMIT 8;</code></pre>
+  <p><strong>Strict caveats:</strong> this is a two-hop pattern — a precomputed co-occurrence table (edge
+  list) usually beats a live graph engine; that's fine, it <em>is</em> the graph. Popularity bias and
+  catalog drift need windowing/decayed counts. A graph DB earns its place when recommendations must chain
+  ("similar items from the brand this customer's team prefers"), not for the base pair scoring.</p>
+  <p><strong>Bail-out:</strong> once behavioral data is rich, trained embeddings / two-tower models usually
+  beat hand-built edge graphs (see the vector report, Part 3 §3).</p>
+
+  <h2 id="uc4">4 · Access control, permissions, and reachability</h2>
+  <p><strong>Signal:</strong> permissions that <em>inherit and delegate</em>: groups contain groups,
+  folders contain folders, shares propagate, service accounts act for users. "Can identity X reach
+  resource Y, through which chain?" is a graph reachability question — and the answer must be
+  explainable in an audit.</p>
+  <p><strong>Recipe:</strong> the guarded recursive walk from Part 2 §2 is exactly this query — swap
+  <code>manager_id</code> for <code>(grantee, grants_to)</code> edges, keep the <code>chain[]</code> array,
+  and it doubles as the audit trail: "X reached Y because group A contains group B which holds role R".
+  For read-heavy authorization, precompute a closure table (every reachable pair, materialized) or use
+  <code>ltree</code> — write-time cost for read-time certainty.</p>
+  <p><strong>Strict caveats:</strong> this is the highest-blast-radius use case on the list: a cycle bug
+  in grant propagation is a security incident. Enforce acyclicity at write time (path arrays, closure
+  tables, or <code>ltree</code>), test with adversarial fixtures, and cap depth. Zanzibar-style systems
+  (Google, then open-source implementations) deliberately use <em>narrow</em> lookups with caching instead
+  of unbounded traversal — a graph model yes, but not a graph <em>database</em> on the request path.</p>
+  <p><strong>Bail-out:</strong> static RBAC tables (≤2 joins, no delegation chains) — SQL, and RLS is
+  already your enforcement layer.</p>
+
+  <h2 id="uc5">5 · Network/IT impact analysis, blast radius, attack paths</h2>
+  <p><strong>Signal:</strong> CMDBs, cloud inventories, and security graphs ask "what breaks if this
+  service dies?" and "what path leads from this laptop to the crown-jewel database?" Multi-hop
+  dependencies (hosts→VMs→clusters→apps→business services) are exactly what joins tangle into and graph
+  traversals express directly. Attack-path tooling (BloodHound-class) is graph analytics in the literal
+  sense.</p>
+  <pre><code>-- AGE: dependency descendants of a failing node
+SELECT * FROM cypher('cmdb', $$
+  MATCH (n:Service {id: 'payments-api'})&lt;-[:DEPENDS_ON*1..4]-(impacted)
+  RETURN DISTINCT impacted.id, impacted.tier
+$$) AS (id agtype, tier agtype);</code></pre>
+  <p><strong>Strict caveats:</strong> dependency graphs rot — stale edges give confidently wrong blast
+  radii; ingestion from IaC/cloud APIs must be automated and timestamped (put <code>observed_at</code> on
+  every edge). Deep transitive dependency walks over cyclic infra graphs need the VLE discipline from
+  Part 2 §7.</p>
+  <p><strong>Bail-out:</strong> a fixed 1–2-level dependency list — a JSONB column plus an index answers
+  it, and honestly.</p>
+
+  <h2 id="uc6">6 · Entity resolution, master data, customer 360</h2>
+  <p><strong>Signal:</strong> the same real-world entity appears as many records (emails, phones,
+  addresses, company IDs) and you must merge/survive them: "everything we know about this person/company".
+  Identity resolution naturally forms islands of linked records — connected components are the unit of
+  work, and merges are graph surgery (redirect edges, merge nodes, keep provenance).</p>
+  <p><strong>Recipe:</strong> blocking keys + match rules produce <em>candidate edges</em> (SQL with
+  pg_trgm/btree_gin), a components pass clusters them (pgRouting's component functions, NetworkX offline,
+  or GDS at scale), survivorship rules pick the master record. Keep every match edge with score and rule
+  id — an audit will ask "why are these two the same entity?".</p>
+  <p><strong>Strict caveats:</strong> false merges are worse than duplicates (data crosses customers —
+  think privacy); threshold your match scores on labeled pairs, review big clusters first. The graph is a
+  <em>layer</em>: the master record stays relational.</p>
+  <p><strong>Bail-out:</strong> exact business keys already exist across systems (same tax ID is the
+  join key) — that's MDM with a join, not entity resolution.</p>
+
+  <h2 id="uc7">7 · Lineage and dependency graphs (data, code, supply chain)</h2>
+  <p><strong>Signal:</strong> "if I change this column / table / part / function, what breaks?" — lineage
+  (dbt/ODPS-style column lineage), code dependency graphs, BOMs, supply-chain tier-N risk. Nodes with
+  types, edges with kind and time, questions in both directions (what do I affect? what affects me?).</p>
+  <p><strong>Recipe:</strong> an <code>(src, dst, kind, observed_at)</code> edge table is the whole
+  substrate; impact queries are the Part 2 §2 recursive walk with the path kept; graph visualization
+  (Cytoscape-style) is where the payoff shows. The Kuzu-lineage tooling (codespine's blast-radius work
+  over a code graph) is a good embedded-engine case study of the pattern.</p>
+  <p><strong>Strict caveats:</strong> lineage graphs are <em>only</em> as good as their harvest —
+  manual entry dies in a quarter. Generated-at-build-time ingestion is the feature; the graph is the
+  report. Depth limits and per-type edge filters are non-negotiable on dense call graphs.</p>
+  <p><strong>Bail-out:</strong> trees you always read top-down — <code>ltree</code> or adjacency +
+  recursive CTE; a graph database adds nothing to a tree.</p>
+
+  <h2 id="uc8">8 · Routing, catchments, and logistics (the graph you already own)</h2>
+  <p><strong>Signal:</strong> roads, cables, pipes, flight legs, delivery legs — weighted networks with
+  shortest-path, driving-distance, and k-shortest-path questions. This is graph OLTP/OLAP in the literal,
+  original sense.</p>
+  <pre><code>SELECT * FROM pgr_drivingDistance(
+  $$SELECT id, source, target, cost, reverse_cost FROM road_edges$$,
+  :start_vertex, 30.0 /* minutes */, directed =&gt; true, reverse =&gt; false);
+-- then join the reachable vertex set to your POI/facility tables in plain SQL</code></pre>
+  <p><strong>Strict caveats:</strong> pgrRouting assumes your edge table is a <em>clean network</em>
+  (no dangling nodes, correct direction semantics, turn restrictions via pgr_trsp); network prep is most
+  of the project. Large national-scale routing wants pre-processing (contraction hierarchies in dedicated
+  routing engines like Valhalla/OSRM) — pgRouting is the right answer at city/utility scale, not
+  continental-scale ride-hailing.</p>
+  <p><strong>Bail-out:</strong> you only need geodesic distance, not paths — that's PostGIS, not graphs.</p>
+
+  <h2 id="summary">Use-case → recipe summary</h2>
+  <div class="table-wrap"><table>
+    <thead><tr><th>Use case</th><th>Postgres recipe</th><th>Non-negotiable companion</th></tr></thead>
+    <tbody>
+      <tr><td>Fraud rings / AML</td><td>AGE pattern match + relational predicates in one transaction</td><td>Offline OLAP scoring; supernode handling</td></tr>
+      <tr><td>Knowledge graphs / GraphRAG</td><td>Entity/edge tables + hybrid retrieval; or graph-native GraphRAG stack</td><td>Provenance on every edge; honest indexing-cost budget</td></tr>
+      <tr><td>Recommendations</td><td>Precomputed co-occurrence edge table, windowed</td><td>Exit path to trained embeddings when data is rich</td></tr>
+      <tr><td>Access / reachability</td><td>Recursive CTE with chain kept; closure tables or ltree</td><td>Acyclicity enforced at write time; adversarial tests</td></tr>
+      <tr><td>IT impact / attack paths</td><td>AGE VLE with hop bounds; edge observed_at</td><td>Automated, timestamped ingestion</td></tr>
+      <tr><td>Entity resolution / MDM</td><td>Candidate edges in SQL + offline components pass</td><td>Thresholds on labeled pairs; master stays relational</td></tr>
+      <tr><td>Lineage / dependencies</td><td>(src, dst, kind) edge table + recursive walk</td><td>Build-time harvest; depth caps</td></tr>
+      <tr><td>Routing / logistics</td><td>pgRouting 4.0 over clean edge tables</td><td>Network prep; dedicated engines at huge scale</td></tr>
+    </tbody>
+  </table></div>
+
+  <div class="pager">
+    <a href="02_postgresql_graph.html">← Part 2 — PostgreSQL &amp; graphs</a>
+    <a class="next" href="04_when_not_to_use.html">Part 4 — When NOT to use →</a>
+  </div>
+
+</div>
+</main>
+
+<footer class="site-foot">
+  <div class="wrap">
+    <span>Graph Databases Investigation · Part 3 · Bail-out conditions are the point of this page.</span>
+    <span>Sources on the <a href="index.html#sources">overview page</a>.</span>
+  </div>
+</footer>
+
+</body>
+</html>

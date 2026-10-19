@@ -1,0 +1,315 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Part 2 — PostgreSQL &amp; graphs deep dive | Graph Databases Investigation</title>
+<meta name="description" content="Graphs without a second database: recursive CTEs, ltree, pgRouting, Apache AGE engineering manual (storage, agtype, indexes, VLE, hybrid SQL+Cypher), and the PostgreSQL 19 SQL/PGQ story.">
+<link rel="stylesheet" href="assets/report.css">
+</head>
+<body>
+
+<header class="top">
+  <div class="wrap">
+    <a class="brand" href="index.html">
+      <span class="brand-icon">G<i>D</i>B</span>
+      <span><b>Graph Databases Investigation</b><small>SQL Mastery · field report</small></span>
+    </a>
+    <nav>
+      <a href="index.html">Overview</a>
+      <a href="01_foundations.html">1 · Foundations</a>
+      <a class="current" href="02_postgresql_graph.html">2 · PostgreSQL</a>
+      <a href="03_use_cases.html">3 · Use cases</a>
+      <a href="04_when_not_to_use.html">4 · When NOT to use</a>
+    </nav>
+  </div>
+</header>
+
+<section class="hero">
+  <div class="wrap">
+    <p class="eyebrow">Part 2 of 4 · The PostgreSQL case</p>
+    <h1>Relationships are foreign keys.<br>Graphs are query shapes.</h1>
+    <p>Before a second database enters the picture, PostgreSQL already gives you a ladder of graph
+    capability: indexed joins, recursive CTEs, <code>ltree</code>, pgRouting, Apache AGE's openCypher over
+    the same heap and WAL, and a standard-SQL destination (SQL/PGQ) that the project is slowly walking
+    toward. This page is the strict engineering manual: what each rung guarantees, what it costs, where
+    the real ceilings are.</p>
+  </div>
+</section>
+
+<main>
+<div class="wrap">
+
+  <div class="toc">
+    <p>Contents</p>
+    <ol>
+      <li><a href="#ladder">The ladder: five rungs before a second database</a></li>
+      <li><a href="#cte">The baseline: indexed joins + recursive CTEs</a></li>
+      <li><a href="#adjacent">Adjacent rungs: ltree and pgRouting</a></li>
+      <li><a href="#age-status">Apache AGE: status, licensing, guarantees</a></li>
+      <li><a href="#age-internals">Under AGE: label tables, graphid, agtype, indexes</a></li>
+      <li><a href="#age-cypher">Cypher in AGE: shapes, MERGE, and the sharp edges</a></li>
+      <li><a href="#age-vle">Variable-length paths: the honest cost model</a></li>
+      <li><a href="#pgq">SQL/PGQ: the standard, and the PostgreSQL 19 story</a></li>
+      <li><a href="#ops">Operations: install, upgrade, security, monitoring</a></li>
+      <li><a href="#worked">A worked production schema (SQL + Cypher side by side)</a></li>
+    </ol>
+  </div>
+
+  <h2 id="ladder">1 · The ladder: five rungs before a second database</h2>
+  <div class="table-wrap"><table>
+    <thead><tr><th>Rung</th><th>You reach it when</th><th>Tool</th></tr></thead>
+    <tbody>
+      <tr><td>1</td><td>Hops are fixed at 1–3 and filters are typed</td><td>Plain indexed JOINs (already have it)</td></tr>
+      <tr><td>2</td><td>Depth is variable, but data is in your tables</td><td><code>WITH RECURSIVE</code></td></tr>
+      <tr><td>3</td><td>Hierarchy is the domain (trees, taxonomies, org charts)</td><td><code>ltree</code> (core since forever) or closure tables</td></tr>
+      <tr><td>4</td><td>Network algorithms over SQL tables (routing, reachability costs)</td><td><strong>pgRouting 4.0</strong></td></tr>
+      <tr><td>5</td><td>You want a graph <em>model</em> and Cypher, still inside Postgres</td><td><strong>Apache AGE 1.8.x</strong> (+ its own algorithms-lite SRFs)</td></tr>
+      <tr><td>—</td><td>Standard graph syntax over tables without an extension</td><td>SQL/PGQ — standard exists; Postgres GA does not yet (see §8)</td></tr>
+    </tbody>
+  </table></div>
+  <p>Each rung keeps the same properties you already pay for: ACID, WAL, replicas, PITR, <code>pg_dump</code>,
+  RLS, constraints. The only reason to leave the ladder is a measured wall: deep traversal latency at
+  concurrency, or whole-graph analytics as a product (Parts 3–4).</p>
+
+  <h2 id="cte">2 · The baseline: indexed joins + recursive CTEs</h2>
+  <pre><code>-- Variable-depth tree walk, with cycle guard via UNION (implicit dedup)
+WITH RECURSIVE org_path AS (
+    SELECT id, name, manager_id, 1 AS depth, ARRAY[id] AS seen
+    FROM   employees
+    WHERE  id = :root
+    UNION                                  -- UNION, not UNION ALL: dedup = cycle detection
+    SELECT e.id, e.name, e.manager_id, p.depth + 1, p.seen || e.id
+    FROM   employees e
+    JOIN   org_path p ON e.manager_id = p.id
+    WHERE  p.depth &lt; 20                    -- belt-and-braces depth cap
+)
+SELECT * FROM org_path ORDER BY seen;      -- 'seen' doubles as the path</code></pre>
+  <div class="box rule">
+    <span class="tag">The two decisions that decide recursive-CTE performance</span>
+    <ol>
+      <li><strong>Index the traversal predicate.</strong> <code>CREATE INDEX ON employees (manager_id);</code>
+      — without it every level is a sequential scan and the "graph" is O(depth × rows).</li>
+      <li><strong>Choose dedup semantics deliberately.</strong> <code>UNION ALL</code> is faster but
+      infinite-loops on cycles; <code>UNION</code> dedups rows (cost: sorting/hashing per level); an
+      explicit <code>seen[]</code> array (or Postgres 18-style cycle columns) gives you path semantics.
+      openCypher uses <em>edge-unique</em> path semantics — neither SQL default matches it exactly.</li>
+    </ol>
+  </div>
+  <p>This pattern — indexed FK + recursive CTE — is a genuinely working graph store for hierarchies,
+  reachability, and small-world neighborhoods up to tens of millions of edges, with 100% exactness and a
+  query plan you can read. It is also the fallback the PostgreSQL release team itself recommends after
+  pulling SQL/PGQ from v19 ("Recursive CTEs, or a graph extension such as Apache AGE").</p>
+
+  <h2 id="adjacent">3 · Adjacent rungs: ltree and pgRouting</h2>
+  <p><strong><code>ltree</code></strong> (core module) stores hierarchy paths as labels
+  (<code>electronics.tv.lcd</code>) and indexes them with GiST/GIN: ancestor/descendant queries
+  (<code>@&gt;</code>, <code>&lt;@</code>, lquery patterns) become index lookups instead of walks. For
+  trees-and-subtrees workloads it beats recursive CTEs on read-heavy access patterns; maintenance is
+  path rewrites on reparenting.</p>
+  <p><strong>pgRouting 4.0</strong> implements the classic network-algorithm family as SQL functions over
+  ordinary edge tables: <code>pgr_dijkstra</code>, <code>pgr_aStar</code>, <code>pgr_drivingDistance</code>,
+  <code>pgr_KSP</code> (k-shortest), TSP families, turn-restricted routing (TRSP), plus connected-components
+  style helpers. The signature pattern feeds it a SELECT of <code>(id, source, target, cost [, reverse_cost])</code>:</p>
+  <pre><code>SELECT seq, node, edge, cost, agg_cost
+FROM   pgr_dijkstra($$SELECT id, source, target, length_m AS cost
+                     FROM   road_edges$$, :from_v, :to_v, directed =&gt; false);</code></pre>
+  <p>Pair it with PostGIS and you have road-network routing, catchment areas, and utility-network
+  analysis — graph work done by a 4.0-version, Boost-backed extension, with no graph database anywhere.</p>
+
+  <h2 id="age-status">4 · Apache AGE: status, licensing, guarantees</h2>
+  <ul>
+    <li><strong>Current release:</strong> AGE <strong>1.8.0</strong> (ASF catalog 2026-08-06; EDB packaging 2026-08-11). Supports <strong>PostgreSQL 11–18</strong> — master branch targets PG 18; PG 12–17 release branches exist. Docker images, source builds, EDB's packaged extension; also runs on stock managed Postgres where operators enable it.</li>
+    <li><strong>License:</strong> Apache 2.0, Apache Software Foundation top-level project (since May 2022) — permissive, governance-stable, no single-vendor capture.</li>
+    <li><strong>Full Postgres semantics:</strong> graph operations run on Postgres' transaction/cache and storage layers — ACID (the FAQ confirms ACID across graph, relational, and JSON document), MVCC, WAL, replication, backups, triggers, constraints on label tables, and RLS support since 1.7.0 (Jan 2026).</li>
+    <li><strong>Hybrid querying is the core promise:</strong> <code>cypher()</code> is a table function, so Cypher and SQL compose in one statement and one transaction — the property dedicated graph stores keep charging you to rebuild via sync.</li>
+    <li><strong>Scale ceiling:</strong> 281,474,976,710,655 (2⁴⁸−1) combined vertices + edges <em>per graph</em> (graphid is label(16 bits) + entry(48 bits)); many graphs per database.</li>
+    <li><strong>Feature surface (1.8.x):</strong> openCypher subset (MATCH/CREATE/MERGE with ON CREATE/ON MATCH SET since 1.8, OPTIONAL MATCH, UNWIND, WITH, ORDER/LIMIT, aggregates, list predicates <code>all()/any()/none()/single()</code>, <code>reduce()</code>); variable-length paths with major 1.8 VLE performance work; <code>shortest_path()</code>/<code>all_shortest_paths()</code> set-returning functions and <code>create_subgraph()</code> added in 1.8; <code>agtype ↔ jsonb</code> casts; index-scan support; CSV graph loaders; python/java/node/rust/.net drivers.</li>
+  </ul>
+
+  <h2 id="age-internals">5 · Under AGE: label tables, graphid, agtype, indexes</h2>
+  <p>AGE is transparent on purpose: <code>create_graph('social')</code> makes a schema with
+  <code>_ag_label_vertex</code> and <code>_ag_label_edge</code> parent tables; every label you use
+  (<code>:Person</code>, <code>:KNOWS</code>) becomes its own child <strong>heap table</strong>:</p>
+  <pre><code>social."Person"   (id graphid PK, properties agtype NOT NULL DEFAULT agtype_build_map())
+social."KNOWS"    (id graphid PK, start_id graphid, end_id graphid,
+                   properties agtype NOT NULL DEFAULT agtype_build_map())</code></pre>
+  <p>Consequences worth internalizing:</p>
+  <ul>
+    <li><strong>You can query the graph in plain SQL.</strong> <code>SELECT * FROM social."KNOWS" WHERE
+    start_id = ...</code> works; <code>properties::jsonb</code> is a documented cast in 1.8. The graph is
+    ordinary tables — autovacuum, replicas, <code>pg_stat_statements</code>, FDW tricks all apply.</li>
+    <li><strong>Indexes are Postgres indexes.</strong> The FAQ is explicit: AGE "uses PostgreSQL's
+    indexes" and <code>agtype</code> behaves JSONB-like, so B-tree/Hash/GIN apply. The workhorse is a GIN
+    with the containment opclass so <code>MATCH (p:Person {name:'Ada'})</code> starts from an index, not a
+    scan:</li>
+  </ul>
+  <pre><code>-- property lookup for the pattern start (see AGE manual for the current opclass name)
+CREATE INDEX ON social."Person" USING gin (properties agtype_properties_ops);
+-- 1.7.0 added indexes on id columns (endpoint joins, VLE lookups):
+CREATE INDEX ON social."KNOWS" (start_id);
+CREATE INDEX ON social."KNOWS" (end_id);</code></pre>
+  <div class="box warn">
+    <span class="tag">The disclosed tradeoff</span>
+    <p>Because edges are heap rows joined by graphid, AGE is a <strong>non-native</strong> graph layer
+    (Part 1 §5): its own FAQ says "AGE uses relational models under the hood. Some limitations of the
+    relational model apply to AGE, for example large amounts of table joins." AGE counters with custom
+    scan nodes and the 1.8 VLE overhaul (hash-adjacency structure + flat edge arrays), but the honest
+    expectation is: shallow pattern matching ≈ index cost; deep fan-out ≈ join cost. Benchmark your hop
+    profile; don't assume O(1)-per-hop.</p>
+  </div>
+
+  <h2 id="age-cypher">6 · Cypher in AGE: shapes, MERGE, and the sharp edges</h2>
+  <pre><code>CREATE EXTENSION age;
+LOAD 'age';                                    -- 1.8 can instead go in shared_preload_libraries
+SET search_path = ag_catalog, "$user", public; -- per session, like always
+
+SELECT create_graph('fraud');
+
+-- create nodes / typed edges
+SELECT * FROM cypher('fraud', $$
+  CREATE (a:Account {id: 1001, risk: 'new'})-[e:TRANSFERS_TO {amount: 2500, at: '2026-10-12'}]-&gt;(b:Account {id: 2002})
+$$) AS (v agtype);
+
+-- pattern match: the canonical 2-hop ring probe
+SELECT * FROM cypher('fraud', $$
+  MATCH (a:Account {id: 1001})-[:TRANSFERS_TO]-&gt;(m:Account)-[:TRANSFERS_TO]-&gt;(b:Account {id: 1001})
+  RETURN m
+$$) AS (m agtype);
+
+-- idempotent upsert (ON CREATE/ON MATCH SET arrived in 1.8.0)
+SELECT * FROM cypher('fraud', $$
+  MERGE (p:Person {ext_id: $ext_id})
+  ON CREATE SET p.created_at = '2026-10-19'
+  ON MATCH  SET p.updated_at = '2026-10-19'
+$$) AS (p agtype);</code></pre>
+  <p>The sharp edges, all documented behavior, all manageable:</p>
+  <ul>
+    <li><strong>Every <code>cypher()</code> call must declare its output columns:</strong>
+    <code>AS (m agtype)</code>. The planner treats it as a function returning <code>SETOF record</code>.
+    It cannot appear inside expressions — use a subquery in <code>FROM</code>.</li>
+    <li><strong>Parameters require prepared statements</strong> (the map argument errors otherwise).</li>
+    <li><strong>It is an openCypher <em>subset</em> converging toward, not conforming to, the language:</strong>
+    no graph type system/schema clause, no GQL composition operators, some list/collection semantics differ,
+    and the community files real gaps (e.g., label-pattern-expression fixes landed in 1.8). Ported Neo4j
+    queries need testing, not trust.</li>
+    <li><strong>Return values are <code>agtype</code>:</strong> map/list/scalar superset of JSONB. You
+    often want <code>(v-&gt;'name')::text</code>-style extraction (or 1.8's composite vertex/edge types with
+    direct field access) rather than shipping agtype to the app.</li>
+  </ul>
+
+  <h2 id="age-vle">7 · Variable-length paths: the honest cost model</h2>
+  <p>VLE (<code>[*1..k]</code>) is where graph queries pay for combinatorics. The 2026 discussion around
+  AGE issue #2349 is worth reading because it is precise: AGE's VLE enforces <strong>edge uniqueness</strong>
+  (openCypher edge-isomorphism — vertices may repeat via different edges), the output size on cyclic graphs
+  grows combinatorially, and the fix is semantic care (bounded hops, relationship-type filters — 1.8 added
+  relationship-type filters and a minimum hop count), not a "visited set" that would silently change
+  semantics. The 1.8.0 line shipped the real engineering answer: hash-adjacency + flat-array edge
+  structures, terminal-qual rewrite, VLE caching, and a documented cost-model note.</p>
+  <div class="box rule">
+    <span class="tag">VLE checklist before production</span>
+    <div class="check"><ul>
+      <li>Hop bounds always present (<code>[*1..k]</code>, never <code>[*]</code>)</li>
+      <li>Edge labels constrained on every hop where the domain knows them</li>
+      <li>Endpoint indexes exist (<code>start_id</code>/<code>end_id</code>, id columns since 1.7)</li>
+      <li>Measure on a cycle-rich slice of real data, not a tree-shaped toy dataset</li>
+      <li>Compare against a hand-written recursive CTE (UNION dedup) — sometimes the SQL is faster and exact to your intent (see #2349's measurements: CTE 0.34 ms vs VLE 23 ms at one benchmark shape)</li>
+    </ul></div>
+  </div>
+
+  <h2 id="pgq">8 · SQL/PGQ: the standard — and the PostgreSQL 19 story as of October 2026</h2>
+  <p>SQL:2023 added <strong>SQL/PGQ</strong> (ISO/IEC 9075-16): <code>CREATE PROPERTY GRAPH</code> defines a
+  read-only graph view over existing tables (vertices/edges = tables, keys required), and
+  <code>GRAPH_TABLE(g MATCH (c IS customer)-[IS has_placed]-&gt;(o IS "order") COLUMNS (...))</code> embeds
+  graph patterns in ordinary SQL. Oracle ships it; DuckDB ships it via DuckPGQ; Neo4j's engineers influenced
+  the design. The PostgreSQL community tried to ship it in PostgreSQL 19 — and the honest current status,
+  as of this report's October 2026 window:</p>
+  <div class="box warn">
+    <span class="tag">As of 2026-10-19</span>
+    <p>SQL/PGQ was committed and visible in the PostgreSQL 19 <em>beta</em> docs
+    (<code>CREATE PROPERTY GRAPH</code>, <code>GRAPH_TABLE</code>, "conforms to ISO/IEC 9075-16") but the
+    release team <strong>reverted it on 2026-09-07</strong> over unresolved catalog/dump-restore design
+    questions (orphaned graph metadata, label scoping, <code>pg_class</code> membership, dependency
+    loops). PostgreSQL 19 GA (planned 2026-11-19) ships <strong>without</strong> it; a comeback is aimed at
+    v20. Do not write migrations against beta syntax. Until then the ladder is: recursive CTEs, AGE, or —
+    on other engines — standard SQL/PGQ support (Oracle 23ai/26c, DuckDB+DuckPGQ for analytics).</p>
+  </div>
+  <p>The strategic read matches Percona's: the syntax is standard, the collaboration is multi-vendor, and
+  the missing piece is engine-level indexing for graph patterns. If it lands in v20 and index support
+  follows, many "shallow graph" workloads stop needing any extension at all. Watch, don't bet the roadmap.</p>
+
+  <h2 id="ops">9 · Operations: install, upgrade, security, monitoring</h2>
+  <div class="table-wrap"><table>
+    <thead><tr><th>Task</th><th>AGE-specific practice</th></tr></thead>
+    <tbody>
+      <tr><td>Upgrade</td><td>Release notes open with "Always back up your database before executing any upgrade scripts." <code>ALTER EXTENSION age UPDATE;</code>; 1.7's upgrade script creates label indexes and can run long on big graphs. Re-run your query tests: openCypher behavior is still stabilizing (multiple correctness fixes per release).</td></tr>
+      <tr><td>pg_upgrade</td><td>1.8.0 added pg_upgrade support functions — but keep it as an extension on a normal cluster, and still test major-version upgrades on a copy.</td></tr>
+      <tr><td>Session setup</td><td>Every connection needs <code>LOAD 'age'</code> + <code>search_path = ag_catalog, ...</code>; 1.8 allows <code>shared_preload_libraries = 'age'</code> to make it cluster-wide. PgBouncer-style pooling must carry these settings.</td></tr>
+      <tr><td>Security</td><td>Label tables are ordinary tables: grant on them, RLS policies (since 1.7), row security applies. <code>drop_graph(..., cascade)</code> is destructive — treat graph DDL like table DDL with reviews.</td></tr>
+      <tr><td>Bloat/vacuum</td><td>Labels are heap tables — UPDATE-heavy graph churn behaves like any hot table: autovacuum, fillfactor, REINDEX as usual. This is a genuine advantage over ANN/graph structures that vacuum poorly.</td></tr>
+      <tr><td>Plan visibility</td><td><code>EXPLAIN</code> works on the wrapping SELECT; watch for seq scans on label tables (missing property/endpoint index) and nested-loop blowups on VLE. 1.8 added index-scan support; still profile hop-by-hop.</td></tr>
+      <tr><td>Analytics on top</td><td>AGE 1.8 added <code>shortest_path()</code>/<code>all_shortest_paths()</code> and <code>create_subgraph()</code> — useful, not a GDS-class algorithm catalog. For PageRank/communities at scale: extract edge lists with SQL and run NetworkX/Graph-tool/pgRouting, or a dedicated engine (Part 4).</td></tr>
+    </tbody>
+  </table></div>
+
+  <h2 id="worked">10 · A worked production schema (SQL + Cypher side by side)</h2>
+  <p>Fraud-screening graph in Postgres: typed facts stay relational (auditable, indexed, constrained),
+  the relationship pattern lives in AGE, and the query composes both in one transaction:</p>
+  <pre><code>CREATE EXTENSION IF NOT EXISTS age;
+
+CREATE TABLE accounts (
+    account_id   bigint PRIMARY KEY,
+    customer_id  bigint NOT NULL,
+    country      text   NOT NULL,
+    opened_at    timestamptz NOT NULL,
+    status       text   NOT NULL DEFAULT 'active'
+);
+CREATE INDEX ON accounts (customer_id);
+
+SELECT create_graph('fraud');
+-- labels (:Account, :TRANSFERS_TO, :USES_DEVICE, ...) materialize lazily as
+-- tables when first used; the ingestion trigger below is what populates them.</code></pre>
+  <p>Ingest keeps SQL as source of truth and the graph as a derived projection in the same commit:</p>
+  <pre><code>CREATE FUNCTION project_transfer() RETURNS trigger AS $$
+BEGIN
+  PERFORM set_config('search_path', 'ag_catalog, "$user", public', true);
+  SELECT * FROM cypher('fraud', $$
+    MERGE (a:Account {id: $from})
+    MERGE (b:Account {id: $to})
+    MERGE (a)-[e:TRANSFERS_TO {tx_id: $tx}]-&gt;(b)   -- tx_id keeps edges idempotent
+    ON CREATE SET e.amount = $amt, e.at = $at
+  $$, '{"from":1001,"to":2002,"tx":88001,"amt":2500,
+       "at":"2026-10-19"}') AS (v agtype);
+  RETURN NEW;
+END $$ LANGUAGE plpgsql;</code></pre>
+  <p>Screening query: relational predicates do the contract, Cypher finds the ring shape:</p>
+  <pre><code>SELECT c.*
+FROM   cypher('fraud', $$
+         MATCH (a:Account {id: $acct})-[:TRANSFERS_TO*1..3]-&gt;(x:Account)
+         RETURN DISTINCT x.id
+       $$, '{"acct":1001}') AS (suspect agtype)
+JOIN   accounts a   ON a.account_id = (suspect::jsonb -&gt;&gt; 'id')::bigint
+JOIN   customers c ON c.customer_id = a.customer_id
+WHERE  a.status = 'active' AND a.country IN ('US','DE')   -- typed filters, explainable
+ORDER  BY a.risk_score DESC;                              -- plans you can read</code></pre>
+  <p>That is the whole system: one database, one transaction manager, graph patterns where patterns pay,
+  SQL everywhere else. The costs — trigger-path complexity, openCypher subset testing, hop-depth tuning —
+  are real but ordinary database work.</p>
+
+  <div class="pager">
+    <a href="01_foundations.html">← Part 1 — Foundations</a>
+    <a class="next" href="03_use_cases.html">Part 3 — Use cases →</a>
+  </div>
+
+</div>
+</main>
+
+<footer class="site-foot">
+  <div class="wrap">
+    <span>Graph Databases Investigation · Part 2 · Syntax per the AGE 1.8 manual; test every query on your PG version.</span>
+    <span>Do not target PostgreSQL 19 <em>beta</em> SQL/PGQ syntax — it was reverted.</span>
+  </div>
+</footer>
+
+</body>
+</html>

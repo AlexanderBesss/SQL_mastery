@@ -1,0 +1,289 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Part 4 — When NOT to use graph databases | Graph Databases Investigation</title>
+<meta name="description" content="Strict rules for when dedicated graph databases are the wrong tool, the anti-pattern catalog, the vendor-consolidation ledger, graph privacy risks, and the honest short list of when a dedicated graph DB is correct.">
+<link rel="stylesheet" href="assets/report.css">
+</head>
+<body>
+
+<header class="top">
+  <div class="wrap">
+    <a class="brand" href="index.html">
+      <span class="brand-icon">G<i>D</i>B</span>
+      <span><b>Graph Databases Investigation</b><small>SQL Mastery · field report</small></span>
+    </a>
+    <nav>
+      <a href="index.html">Overview</a>
+      <a href="01_foundations.html">1 · Foundations</a>
+      <a href="02_postgresql_graph.html">2 · PostgreSQL</a>
+      <a href="03_use_cases.html">3 · Use cases</a>
+      <a class="current" href="04_when_not_to_use.html">4 · When NOT to use</a>
+    </nav>
+  </div>
+</header>
+
+<section class="hero">
+  <div class="wrap">
+    <p class="eyebrow">Part 4 of 4 · The strict section</p>
+    <h1>When a graph database<br>is the wrong tool.</h1>
+    <p>"Everything is a graph" is how careers get made and budgets get burned. Most connected data is
+    already a working graph inside the relational database you operate. This page draws the line: ten hard
+    "don't" rules, the anti-pattern catalog, the privacy ledger, the vendor-consolidation warning this
+    category earned in 2025, and — to stay honest — the short list of triggers where a dedicated graph
+    database is genuinely the right call.</p>
+  </div>
+</section>
+
+<main>
+<div class="wrap">
+
+  <div class="toc">
+    <p>Contents</p>
+    <ol>
+      <li><a href="#rules">Ten rules: do not use a dedicated graph DB when…</a></li>
+      <li><a href="#antipatterns">The anti-pattern catalog</a></li>
+      <li><a href="#privacy">The privacy ledger: edges are personal data too</a></li>
+      <li><a href="#consolidation">The consolidation ledger: what Kuzu taught everyone</a></li>
+      <li><a href="#dedicated">When a dedicated graph database IS the right answer</a></li>
+      <li><a href="#dualstore">Primary DB + graph index: the dual-store compromise</a></li>
+      <li><a href="#tree">The decision tree, in words</a></li>
+      <li><a href="#checklists">Sign-off checklists</a></li>
+    </ol>
+  </div>
+
+  <h2 id="rules">1 · Ten rules: do not use a dedicated graph database when…</h2>
+  <ol>
+    <li><strong>…your traversals are 1–2 hops over indexed keys.</strong> A JOIN with a B-tree is already
+    an O(log n) edge lookup, exact, and explainable. The index-free-adjacency advantage is a
+    <em>depth-and-fanout</em> effect; at two hops it's noise. If the SQL is obvious, the SQL is correct.</li>
+    <li><strong>…you haven't measured your hop profile.</strong> Write down the actual queries: max depth,
+    branching factor, start sets. Teams that buy graph engines for "connected data" and then discover
+    their top 50 queries are all ≤2 hops have bought a second DBA. (The one PostgreSQL 19 feature the
+    release team itself recommends instead: recursive CTEs.)</li>
+    <li><strong>…the relationships are typed facts under constraint.</strong> "This order belongs to this
+    customer" wants a foreign key, a CHECK, and RLS — not a label and hope. Property graphs' flexibility
+    is a modeling liability when the schema is the contract.</li>
+    <li><strong>…the workload is actually whole-graph analytics.</strong> PageRank/communities over
+    everything is OLAP: batch it in NetworkX/Graph-tool/pgRouting/GDS/TigerGraph-class tooling. Running
+    analytics scans on your transactional graph store (or vice versa) is this category's most common
+    architecture error.</li>
+    <li><strong>…the graph would be a second source of truth you must sync.</strong> Every dual-store comes
+    with sync lag, reconciliation jobs, and a stale-answer incident class (see §6). If Postgres holds the
+    facts, keep the graph derived — or keep it inside Postgres (AGE) where sync is a trigger, not a
+    pipeline.</li>
+    <li><strong>…your team doesn't speak the query language and the hiring pool is thin.</strong> Cypher is
+    learnable; GQL/Gremlin/GSQL estates are not interchangeable; graph modeling (supernodes, path
+    semantics, property vs relationship decisions) is a skill with a learning curve that shows up as
+    silent query bugs. A database nobody on-call can query is an outage generator.</li>
+    <li><strong>…exact licenses or operational posture rule it out.</strong> Neo4j Community is GPLv3 with
+    clustering/enterprise features gated; some embedded options are effectively unowned (see §4); managed
+    graph services are unit-priced and often the priciest way to hold data you could keep next to the
+    source. Decide against your actual license/compliance/Ops constraints, not a demo.</li>
+    <li><strong>…your data contains supernodes you haven't modeled.</strong> One node with millions of
+    edges flattens every engine's latency story. If the domain has unavoidable hubs (platform accounts,
+    default tenants), you must shard/dodge them anyway — no vendor benchmark with a nice power-law
+    dataset will save you.</li>
+    <li><strong>…deletion obligations can't be honored in the store.</strong> GDPR erasure in a graph is
+    surgery: delete a node and its edges, recompute anything derived (components, embeddings, community
+    summaries), in replicas and backups. If a candidate store makes that unverifiable, it fails on Day 0 —
+    §3 explains why graph deletion is <em>harder</em>, not easier, than row deletion.</li>
+    <li><strong>…you don't yet have the problem.</strong> "Our data is connected" is not a requirement;
+    a named query that JOIN-spaghetti failed is. Every legitimate graph project starts from a query you
+    can write down and time.</li>
+  </ol>
+
+  <h2 id="antipatterns">2 · The anti-pattern catalog</h2>
+  <div class="table-wrap"><table>
+    <thead><tr><th>Anti-pattern</th><th>What goes wrong</th><th>Correct move</th></tr></thead>
+    <tbody>
+      <tr><td>"Graph everything" migration: move every table into nodes because a vendor said so</td>
+        <td>Lose constraints, types, RLS, and the SQL ecosystem; gain a sync pipeline and two sources of truth; query wins never materialize for ≤2-hop workloads</td>
+        <td>Keep typed facts relational; put in a graph only what is relationship-shaped; or use AGE in-place</td></tr>
+      <tr><td>Replacing every FK with an "edge label"</td>
+        <td>Relationships-as-foreign-keys are already traversal; re-modeling them as graph edges is re-labor, and the new store adds a second place for the truth to drift</td>
+        <td>JOINs + recursive CTEs first; measure, then decide</td></tr>
+      <tr><td>Property soup: stuffing queryable facts into node JSON to "avoid joins"</td>
+        <td>Same as JSONB abuse in Postgres — no constraints, weak indexing, silent drift; in a graph it's harder to see because there's no schema to violate</td>
+        <td>Model entities that warrant their own label; index properties you filter on; keep an ownership rule</td></tr>
+      <tr><td>Unbounded <code>[*]</code> variable-length matching on production data</td>
+        <td>Combinatorial path explosion on cycles (AGE's own 5-vertex cycle test yields ~7,092 paths at <code>[*1..∞]</code>); p99 incidents and OOMs</td>
+        <td>Always bound hops; constrain edge labels; benchmark cycle-rich slices; compare against a UNION-dedup CTE</td></tr>
+      <tr><td>Running OLAP (PageRank, communities) on the OLTP graph store at request time</td>
+        <td>Whole-graph scans on the latency-critical path; one analyst query degrades every user</td>
+        <td>Separate analytics: GDS/Graphalytics-class engines, or extract edge lists to in-process libs</td></tr>
+      <tr><td>Trust-but-not-verify vendor benchmark slide drives the POC target</td>
+        <td>Self-published numbers (TigerGraph "2×–8000×", Memgraph "41×", ArcadeDB LDBC table) on non-comparable setups; POC optimizes for the wrong workload</td>
+        <td>LDBC SNB + Graphalytics, or your queries on your slice; write the hop profile first</td></tr>
+      <tr><td>Cypher is Cypher (portability assumption)</td>
+        <td>AGE ⊂ openCypher ≠ Neo4j Cypher ≠ GQL; TCK gaps (even 97.8% self-reports); semantics differences bite on VLE and null handling</td>
+        <td>Keep a portability test suite; treat the conformance matrix as a migration budget</td></tr>
+      <tr><td>Supernode left in the traversal path (shared device/hub account)</td>
+        <td>Every hop through it costs degree-linear time; some engines degrade or time out</td>
+        <td>Detect high-degree nodes at ingest; route around them (precompute, cap, or model the hub as an attribute)</td></tr>
+      <tr><td>Graph DB as LLM memory with no provenance or deletion path</td>
+        <td>"Hallucination memory": extracted edges entrench errors; erasure requests can't trace through derived nodes/summaries</td>
+        <td>Provenance on every edge (source chunk, rule, model+prompt version); deletion plan tested before ingestion</td></tr>
+      <tr><td>Buying the heaviest distributed MPP engine for a mid-size graph</td>
+        <td>K8s-grade operational burden to solve what one Postgres + AGE handled; the "petabyte" story was never your workload</td>
+        <td>Right-size: AGE ≤ single Postgres; native single-node engines to genuine RAM/scale walls; MPP only past them</td></tr>
+    </tbody>
+  </table></div>
+
+  <h2 id="privacy">3 · The privacy ledger: edges are personal data too</h2>
+  <p>Three graph-specific privacy facts every architecture decision should inherit:</p>
+  <ul>
+    <li><strong>Relationships are the sensitive part.</strong> A friendship graph, a transaction graph, or
+    an org graph carries information that no single node does: who knows whom, who really owns which company,
+    who moves money through whom. The canonical demonstrations: the Netflix Prize dataset was re-identified
+    from public IMDB ratings (2007), and the 2018 Strava activity heatmap exposed military installations
+    through the <em>edges between places</em>. "We only published/anonymized nodes" is not a control when
+    the topology itself is the payload.</li>
+    <li><strong>Re-identification through linkage is stronger on graphs.</strong> Two "anonymized" graphs of
+    the same people (or one graph + any auxiliary attribute data) can be matched by structural signatures;
+    the research literature on de-anonymizing social graphs (Narayanan-Shmatkov-style linkage attacks,
+    Twitter-graph exposure incidents) is old and settled: graph structure alone identifies.</li>
+    <li><strong>Erasure is graph surgery.</strong> GDPR/retention deletion must remove the node, all its
+    edges, and propagate through derived artifacts — closure tables, component ids, community summaries,
+    GraphRAG extractions, analytics snapshots. In Postgres+AGE this is one transaction with a trigger
+    cascade (plus replicas/backups like any table); in multi-store setups it's a workflow you must be able
+    to prove. Design the DELETE path before the first INSERT.</li>
+  </ul>
+  <div class="box warn"><span class="tag">Compliance rule</span>
+    <p>A graph over personal data inherits the classification of its most sensitive edge — and adds a duty
+    ordinary tables don't have: prove the <em>structure</em> is safe to expose (or is access-controlled) and
+    that deletion leaves no dangling relationships. "The graph DB isn't PII because names are on only some
+    nodes" is not a lawful position.</p>
+  </div>
+
+  <h2 id="consolidation">4 · The consolidation ledger: what Kuzu taught everyone</h2>
+  <p>In October 2025 the only mainstream embedded graph database vanished in a week: Kuzu (MIT-licensed,
+  University-of-Waterloo lineage, the SQLite-of-graphs) was archived (2025-10-10) after Apple acquired
+  Kùzu Inc. (deal 2025-10-09); the last release, 0.11.3, is frozen — no security fixes — and the ecosystem
+  scattered into forks (LadybugDB, Bighorn, RyuGraph, Vela, pg_ladybug, NeuG). The graph category has
+  precedent beyond it: Memgraph changed hands twice in two years; the 2020–2022 graph-DB funding cohort
+  consolidated hard. Evaluation consequences:</p>
+  <ul>
+    <li><strong>Check the sponsor, not just the license.</strong> MIT without a maintainer is a ticking
+    dependency (see projects pinning <code>kuzu==0.11.3</code> in 2026 and calling it a risk). Ask: who
+    pays the committers, what's the release cadence this year, is there a paying company or a foundation
+    PMC (AGE, as Apache, scores well here)?</li>
+    <li><strong>File formats and storage versions churn across forks.</strong> Kuzu's single-file format
+    changed late; forks don't open each other's files. Storage longevity is an operational property of a
+    graph database — verify it like you'd verify backup restore.</li>
+    <li><strong>Postgres is the counter-position.</strong> The engine at the center of this repo has a
+    30-year release record and an extension ecosystem under a foundation — the graph capability ladder
+    (Part 2) is the low-regret path while the startup layer consolidates.</li>
+  </ul>
+
+  <h2 id="dedicated">5 · When a dedicated graph database IS the right answer</h2>
+  <p>Honesty requires the inverse list. Each trigger is checkable — if you can't point to one in writing,
+  stay on the ladder:</p>
+  <ul>
+    <li><strong>Deep traversal at high concurrency is the product's critical path.</strong> If every
+    request walks 3–6+ hops with wide fan-out (fraud screening, network impact, GraphRAG retrieval),
+    native index-free adjacency is a measured win. Put your hop profile in the design doc before the POC.</li>
+    <li><strong>Whole-graph analytics as a live feature</strong> at scale: Neo4j GDS, TigerGraph, or Neptune
+    Analytics (in-memory, "tens of billions of relationships" per AWS, algorithms + vector) exist for
+    exactly this. Postgres extensions don't cover GDS-class algorithm catalogs at that throughput.</li>
+    <li><strong>Petabyte-scale / mandatory distribution:</strong> TigerGraph-class MPP keeps latency stable
+    at 10+ hops across billions of edges (their benchmark framing — verify on your data); single-node
+    engines, AGE included, don't.</li>
+    <li><strong>Hard isolation between graph workload and the OLTP system</strong> — a query spike must
+    never touch the transactional database; the separate store is a firewall, not redundancy.</li>
+    <li><strong>First-class graph tooling is the differentiator:</strong> Neo4j's ecosystem (Bloom,
+    GraphDataScience, neo4j-graphrag, Cypher tooling) compresses a year of app-tier work; Memgraph's
+    streaming (Kafka/Pulsar) fits real-time ops graphs; ArcadeDB's multi-model + Apache-2.0 fits embedding
+    constraints Postgres already can't meet.</li>
+  </ul>
+  <div class="table-wrap"><table>
+    <thead><tr><th>2026 landscape</th><th>Class</th><th>Pick it when</th><th>Watch out</th></tr></thead>
+    <tbody>
+      <tr><td>Postgres ladder (CTEs / pgRouting / AGE 1.8)</td><td>In-database</td><td>Default for ≤3-hop OLTP, mid-size graphs, one source of truth, RLS/ACID for free</td><td>Deep-hop join cost; openCypher subset; AGE release cadence ≠ Postgres cadence (check your PG version's branch)</td></tr>
+      <tr><td>Neo4j (2026.x CalVer)</td><td>Native OLTP + GDS analytics</td><td>Cypher/GQL ecosystem, GraphRAG stack, largest talent pool</td><td>Clustering/enterprise gated by license; single-server scale ceiling pre-InfiniGraph; vendor's own benchmarks</td></tr>
+      <tr><td>Memgraph</td><td>Native in-memory OLTP</td><td>Low latency, streaming ingest, Cypher-compatible, vector in-core</td><td>In-memory footprint = RAM price; ownership churn (two acquisitions in two years); self-published speed claims</td></tr>
+      <tr><td>TigerGraph</td><td>Distributed MPP</td><td>Deep analytics at billions of edges; graph+vector in one GSQL query</td><td>Operational weight; GSQL estate lock; benchmark marketing is constant</td></tr>
+      <tr><td>Amazon Neptune / Neptune Analytics</td><td>Managed (LPG + RDF)</td><td>AWS-native, Gremlin/openCypher/SPARQL, Bedrock GraphRAG hookup, managed is the product</td><td>Cost model per instance/NCU; vendor benchmarks place it mid-pack on deep traversal — verify</td></tr>
+      <tr><td>ArangoDB / ArcadeDB</td><td>Multi-model</td><td>Graph + document/search/vector in one engine; ArcadeDB Apache-2.0 + replication in OSS</td><td>Jack-of-all-trades performance profile; smaller talent pool; self-run LDBC pages (vendor)</td></tr>
+      <tr><td>JanusGraph / HugeGraph / FalkorDB</td><td>OSS backends / Redis-family</td><td>Specific ops estates (Cassandra/HBase), Redis-native simplicity</td><td>Ops complexity or niche positioning; check activity before betting</td></tr>
+      <tr><td>LadybugDB / Bighorn / Vela (Kuzu forks)</td><td>Embedded</td><td>You want the Kuzu architecture and an active fork (LadybugDB most visible: 0.17.x, 2026)</td><td>Fork longevity is exactly the risk Kuzu demonstrated; storage-format flux</td></tr>
+      <tr><td>RDF stack (GraphDB, Stardog, Jena, Blazegraph)</td><td>Triple stores</td><td>Ontologies, inference, cross-org URIs, SPARQL estates</td><td>Different model and toolchain than LPG; don't mix the two evaluations</td></tr>
+    </tbody>
+  </table></div>
+
+  <h2 id="dualstore">6 · Primary DB + graph index: the dual-store compromise</h2>
+  <p>When §5 triggers are real but Postgres remains the source of truth, the 2026 pattern matches the
+  vector report's: primary database holds facts and lifecycle; the graph holds a derived projection;
+  sync is explicit (outbox / logical decoding / connector), never best-effort dual writes. Graph-specific
+  additions to the runbook: edge deletions must be propagated (a forgotten edge is a false connection —
+  worse than a missing one in fraud work), analytics artifacts (component ids, communities) lag by the
+  batch interval and must carry freshness, and the erasure workflow (§3) must cross both stores with
+  proof. Test the boundary with a concrete question: <em>what does the fraud screen return during a 10-minute
+  sync outage?</em> If the honest answer matters, the in-database ladder (Part 2, AGE included) was the
+  right architecture.</p>
+
+  <h2 id="tree">7 · The decision tree, in words</h2>
+  <ol>
+    <li>Do you have a <em>named query</em> with hop depth ≥3 or real fan-out, or a relationship-shaped
+    domain fact (typed, dated, scored)? No → <strong>SQL/JOIN/recursive CTE</strong>. Done. Most products
+    stop here — this is the majority answer, not a consolation prize.</li>
+    <li>Is the data in Postgres (or fine living there)? Yes → climb the ladder: <strong>recursive CTE →
+    ltree → pgRouting → AGE</strong>, measuring at each rung. (SQL/PGQ over tables is the future standard;
+    not GA in Postgres as of Oct 2026 — don't code against betas.)</li>
+    <li>Workload split? OLTP traversal deep &amp; hot → native OLTP engine (Neo4j/Memgraph/Neptune). OLAP
+    whole-graph → analytics stack (GDS/TigerGraph/Neptune Analytics/in-process libs). Both → separate them
+    deliberately, don't make one machine serve both.</li>
+    <li>Scale wall crossed? Billions of edges / mandatory distribution / supernode storms → distributed MPP
+    or managed, accepting the ops weight and the license terms.</li>
+    <li>Hard constraints override: determinism &amp; audit → relational/AGE with explainable plans, never an
+    opaque pipeline; privacy → graph structure is personal data, deletion path proven first; vendor risk →
+    prefer foundation governance (Postgres, Apache AGE) while the startup layer consolidates.</li>
+    <li>Whatever you pick: write down the acceptance numbers (<em>"6-hop screening query ≤ 250 ms p95 at
+    200 QPS on our 40 M-edge graph"</em>) and re-measure at every upgrade. The number, not the brand, is the
+    architecture — even if every vendor's page disagrees.</li>
+  </ol>
+
+  <h2 id="checklists">8 · Sign-off checklists</h2>
+  <div class="box rule">
+    <span class="tag">Before adding any graph technology</span>
+    <div class="check"><ul>
+      <li>Named queries written down with hop depth and expected fan-out</li>
+      <li>Current Postgres baseline measured (plan + latency) — the number to beat</li>
+      <li>Workload classified OLTP-traversal vs OLAP-analytics (or split planned)</li>
+      <li>Supernodes and cycles identified in a real data slice</li>
+      <li>Deletion/erasure path designed end-to-end, including derived artifacts</li>
+    </ul></div>
+  </div>
+  <div class="box rule">
+    <span class="tag">Before production (Postgres ladder)</span>
+    <div class="check"><ul>
+      <li>Traversal predicates indexed; recursive CTE cycle-guarded (UNION or path array + depth cap)</li>
+      <li>AGE: extension + PG version pair verified (1.8.x ↔ PG11–18), upgrade rehearsal done with backup</li>
+      <li>Property indexes (GIN containment opclass) + endpoint indexes (start_id/end_id) exist</li>
+      <li>VLE bounds enforced in application review; relationship-type filters on hot paths</li>
+      <li>RLS/grants planned over label tables; cypher() output typed to text/numeric at the boundary</li>
+      <li>EXPLAIN reviewed for seq scans and nested-loop blowups on the top 10 graph queries</li>
+      <li>Recall-free but correctness-harnessed: golden fixtures for pattern semantics (VLE edge-uniqueness, null handling)</li>
+      <li>Backup/restore + pg_upgrade rehearsal includes graph schemas</li>
+    </ul></div>
+  </div>
+
+  <div class="pager">
+    <a href="03_use_cases.html">← Part 3 — Use cases</a>
+    <a class="next" href="index.html">Back to Overview →</a>
+  </div>
+
+</div>
+</main>
+
+<footer class="site-foot">
+  <div class="wrap">
+    <span>Graph Databases Investigation · Part 4 · Vendor numbers are labeled; re-measure before you deploy.</span>
+    <span>Sources on the <a href="index.html#sources">overview page</a>.</span>
+  </div>
+</footer>
+
+</body>
+</html>
