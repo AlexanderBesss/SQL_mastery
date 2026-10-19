@@ -6,7 +6,7 @@
   "scripts": {
     "dev": "vinext dev",
     "build": "vinext build",
-    "build:pages": "node scripts/generate-content.mjs && next build",
+    "build:pages": "node scripts/generate-content.mjs && next build && node scripts/publish-report.mjs",
     "lint": "eslint . --ignore-pattern dist --ignore-pattern .next --ignore-pattern app/content/generated.ts",
     "test": "vitest run"
   },

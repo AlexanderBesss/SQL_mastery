@@ -4,6 +4,13 @@
 
 An interactive PostgreSQL learning path for moving from schema fundamentals to production architecture, query performance, concurrency, operations, and Node.js backend interviews.
 
+## Vector databases investigation
+
+A standalone research section lives in [`vector_databases/`](vector_databases/README.md): a four-part
+HTML investigation of vector databases centered on PostgreSQL + pgvector — foundations, a full pgvector
+engineering manual, the use cases that hold up, and a strict guide to when *not* to use them.
+Open `vector_databases/index.html` in a browser.
+
 ## Learning experience
 
 - 35 complete lessons generated from the repository's existing technical notes

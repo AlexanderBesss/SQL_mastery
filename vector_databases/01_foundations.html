@@ -1,0 +1,241 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Part 1 — Foundations: embeddings, distance, ANN | Vector Databases Investigation</title>
+<meta name="description" content="What vector search actually is: embeddings, distance metrics, exact vs approximate nearest neighbor search, HNSW, IVFFlat, DiskANN, quantization, and recall.">
+<link rel="stylesheet" href="assets/report.css">
+</head>
+<body>
+
+<header class="top">
+  <div class="wrap">
+    <a class="brand" href="index.html">
+      <span class="brand-icon">V<i>D</i>B</span>
+      <span><b>Vector Databases Investigation</b><small>SQL Mastery · field report</small></span>
+    </a>
+    <nav>
+      <a href="index.html">Overview</a>
+      <a class="current" href="01_foundations.html">1 · Foundations</a>
+      <a href="02_postgresql_pgvector.html">2 · PostgreSQL</a>
+      <a href="03_use_cases.html">3 · Use cases</a>
+      <a href="04_when_not_to_use.html">4 · When NOT to use</a>
+    </nav>
+  </div>
+</header>
+
+<section class="hero">
+  <div class="wrap">
+    <p class="eyebrow">Part 1 of 4 · Foundations</p>
+    <h1>What "vector search"<br>actually is.</h1>
+    <p>Strip the branding and a vector database does one job: find the <em>k</em> items whose
+    numeric fingerprints are closest to a query fingerprint, fast. Everything else — recall,
+    filtering, cost, "AI" — follows from how that one job is implemented.</p>
+  </div>
+</section>
+
+<main>
+<div class="wrap">
+
+  <div class="toc">
+    <p>Contents</p>
+    <ol>
+      <li><a href="#embeddings">Embeddings: where the numbers come from</a></li>
+      <li><a href="#metrics">Distance metrics and operators</a></li>
+      <li><a href="#exact">Exact vs approximate nearest neighbor</a></li>
+      <li><a href="#indexes">Index families: HNSW, IVFFlat, DiskANN</a></li>
+      <li><a href="#quantization">Quantization: the scale lever</a></li>
+      <li><a href="#eval">Evaluation: recall is a product decision</a></li>
+      <li><a href="#glossary">Working glossary</a></li>
+    </ol>
+  </div>
+
+  <h2 id="embeddings">1 · Embeddings: where the numbers come from</h2>
+  <p>An <strong>embedding model</strong> maps content (text, image, audio, code) to a point in a
+  d-dimensional space such that <em>similar content lands near each other</em>. "Similar" is whatever
+  the model was trained to mean — paraphrase, topic, click behavior, pixel layout. The model choice
+  silently defines your product's definition of similarity; this is the single most consequential
+  decision in the stack, and the database is downstream of it.</p>
+
+  <p>Concrete 2026 reference points (vendor-published specs; verify before designing to them):</p>
+  <div class="table-wrap"><table>
+    <thead><tr><th>Model</th><th>Dimensions</th><th>Input budget</th><th>Indicative cost / 1 M tokens</th><th>Notes</th></tr></thead>
+    <tbody>
+      <tr><td>OpenAI text-embedding-3-small</td><td>1,536 (reducible)</td><td>8 K tokens</td><td>≈ $0.02</td><td>The ecosystem default; most tutorials and integrations assume it.</td></tr>
+      <tr><td>OpenAI text-embedding-3-large</td><td>3,072 (reducible)</td><td>8 K tokens</td><td>≈ $0.13</td><td>Over pgvector's 2,000-dim <code>vector</code> index limit unless you reduce dims or use <code>halfvec</code>.</td></tr>
+      <tr><td>Voyage voyage-3-large</td><td>2,048 (flexible)</td><td>32 K tokens</td><td>≈ $0.06–0.18 (sources differ)</td><td>Long-document leader in 2026 comparisons.</td></tr>
+      <tr><td>Cohere embed-v4</td><td>1,024</td><td>short (multimodal)</td><td>≈ $0.10</td><td>Multilingual + multimodal; hybrid sparse+dense modes.</td></tr>
+      <tr><td>Google gemini-embedding</td><td>768–3,072 selectable</td><td>8 K tokens</td><td>≈ $0.15</td><td>Dimension selectable at the API — useful for storage budgets.</td></tr>
+      <tr><td>Qwen3-Embedding (self-hosted)</td><td>up to 7,168 (flexible)</td><td>32 K tokens</td><td>free + your GPU</td><td>Top 2026 MTEB scores, Apache 2.0; you own serving and privacy.</td></tr>
+      <tr><td>BGE-M3 (self-hosted)</td><td>1,024 dense (+ sparse)</td><td>8 K tokens</td><td>free + your GPU</td><td>Dense + sparse in one model — convenient for hybrid retrieval.</td></tr>
+    </tbody>
+  </table></div>
+
+  <div class="box rule">
+    <span class="tag">Strict rules about models</span>
+    <ul>
+      <li><strong>Never change embedding models without re-embedding the whole corpus.</strong>
+      Vectors from two models are mutually meaningless; mixing them in one index silently poisons results.</li>
+      <li><strong>Store the model identity with every vector</strong> (a column, not tribal knowledge).
+      It makes versioned re-embeddings and side-by-side evaluation possible.</li>
+      <li><strong>Dimension reduction is a real option.</strong> Several 2026 models ship with
+      Matryoshka-style flexible dimensions; practitioners report tiny quality loss truncating
+      3,072-dim vectors to 256–512 (e.g. ~0.6% correlation decay on OpenAI 3-large in one Milvus test).
+      Fewer dims = smaller index, faster distance math, and you clear pgvector's 2,000-dim limit.</li>
+      <li><strong>MTEB leaderboard scores are a filter, not a verdict.</strong> Benchmarks measure
+      public datasets; your corpus, your chunking, and your queries decide whether a model is good.</li>
+    </ul>
+  </div>
+
+  <h2 id="metrics">2 · Distance metrics and operators</h2>
+  <p>"Closest" needs a definition. The metric must match the model card — the model was trained so
+  that one specific geometry means similarity, and the others are approximations at best.</p>
+
+  <div class="table-wrap"><table>
+    <thead><tr><th>Metric</th><th>pgvector operator</th><th>Means</th><th>Use when</th></tr></thead>
+    <tbody>
+      <tr><td>Cosine distance</td><td><code>&lt;=&gt;</code></td><td>Angle between vectors; ignores magnitude</td><td>Text embeddings; the model card says cosine. Most common.</td></tr>
+      <tr><td>Negative inner product</td><td><code>&lt;#&gt;</code></td><td>Dot product (negated because Postgres only scans indexes ASC)</td><td>Vectors already normalized to length 1 (OpenAI, many others) — marginally faster than cosine.</td></tr>
+      <tr><td>L2 / Euclidean</td><td><code>&lt;-&gt;</code></td><td>Straight-line distance</td><td>Model card says L2 (e.g. some image/self-hosted models).</td></tr>
+      <tr><td>L1 / taxicab</td><td><code>&lt;+&gt;</code></td><td>Sum of absolute differences</td><td>Rare; pgvector 0.7+ supports it for ranking-like cases.</td></tr>
+      <tr><td>Hamming / Jaccard</td><td><code>&lt;~&gt;</code> / <code>&lt;%&gt;</code></td><td>Bit disagreement / set overlap (binary vectors)</td><td>Binary hashes (image perceptual hashes, binary-quantized embeddings).</td></tr>
+    </tbody>
+  </table></div>
+
+  <p>For normalized vectors cosine similarity = inner product, and cosine distance = 1 − similarity.
+  pgvector's cosine index skips zero vectors and never indexes NULLs — know this before wondering
+  why a row "disappeared" from results.</p>
+
+  <div class="box warn">
+    <span class="tag">Opclass trap</span>
+    <p>Each index in pgvector is built <em>for one metric</em>
+    (<code>vector_cosine_ops</code>, <code>vector_l2_ops</code>, <code>vector_ip_ops</code>…). The
+    query's operator must match an existing index's opclass or the index is simply not used —
+    there is no error, just a slow query. If you need two metrics, build two indexes and pay twice.</p>
+  </div>
+
+  <h2 id="exact">3 · Exact vs approximate nearest neighbor</h2>
+  <p><strong>Exact (brute-force) search</strong> compares the query against every vector. Perfect
+  recall, embarrassingly parallel, and cheap at small scale: pgvector's default with no vector index
+  is exact search. On modern hardware, scanning hundreds of thousands of 1,536-dim vectors takes tens
+  to low hundreds of milliseconds — often fast enough for backfill jobs and low-QPS features.</p>
+  <p><strong>Approximate nearest neighbor (ANN)</strong> indexes trade exactness for speed by
+  searching a subset of the data structure. Three quantities trade against each other and you pick
+  two (at best all three get worse):</p>
+  <ul>
+    <li><strong>Recall@k</strong> — the fraction of the true k nearest neighbors actually returned.
+    "95% recall" means 1 in 20 of your top-10 results is wrong/missing.</li>
+    <li><strong>Latency</strong> — time to return k results at a given recall.</li>
+    <li><strong>Memory / index size</strong> — what must be resident for the index to be fast.</li>
+  </ul>
+
+  <div class="box rule">
+    <span class="tag">The order of operations</span>
+    <ol>
+      <li>Start with <strong>exact search</strong>. Measure it. (No vector index = guaranteed 100% recall.)</li>
+      <li>Exact search slow, or QPS expensive? Add an ANN index and set an explicit recall target (e.g. 95–99%).</li>
+      <li>Tune the recall/latency dial (<code>ef_search</code> / <code>probes</code>) against that target.</li>
+      <li>Only then consider quantization or a different index family for scale.</li>
+    </ol>
+    <p>Skipping step 1 is the most common way teams end up with "vector search feels off": they
+    tuned latency without ever measuring the recall they gave away.</p>
+  </div>
+
+  <h2 id="indexes">4 · Index families: HNSW, IVFFlat, DiskANN</h2>
+  <div class="table-wrap"><table>
+    <thead><tr><th>Family</th><th>Idea</th><th>Strengths</th><th>Costs</th><th>In Postgres</th></tr></thead>
+    <tbody>
+      <tr><td><strong>HNSW</strong> (graph)</td>
+        <td>Multilayer "small-world" graph; greedy walk from entry points toward the query.</td>
+        <td>Best speed/recall tradeoff; no training step; supports incremental inserts; battle-tested (also used inside Qdrant, Weaviate, Milvus).</td>
+        <td>Largest memory footprint; slowest builds; the graph wants to be in RAM for best latency.</td>
+        <td>pgvector 0.5+ (<code>USING hnsw</code>).</td></tr>
+      <tr><td><strong>IVFFlat</strong> (clustering)</td>
+        <td>k-means the corpus into <code>lists</code>; query searches only the <code>probes</code> nearest lists.</td>
+        <td>Fast, small builds; simple model of behavior; useful when data arrives before you can tune.</td>
+        <td>Lower speed/recall than HNSW; must be built <em>after</em> data exists (training step); recall degrades as the distribution drifts from the old centroids — plan re-builds.</td>
+        <td>pgvector 0.1+ (<code>USING ivfflat</code>).</td></tr>
+      <tr><td><strong>DiskANN / disk-oriented</strong></td>
+        <td>Graph laid out for SSDs; only compressed vectors (binary/quantized) stay hot in RAM, full vectors re-read from disk for re-ranking.</td>
+        <td>Scales far beyond RAM with high recall; strong at tens–hundreds of millions of vectors.</td>
+        <td>Newer/extra extension; needs fast NVMe; build behavior varies (early pgvectorscale builds were single-threaded; current versions offer parallel-build settings).</td>
+        <td>pgvectorscale (Timescale, StreamingDiskANN + SBQ); <code>pg_diskann</code> (Microsoft, Azure-oriented); VectorChord's <code>vchordrq</code> (pre-filtering via bitmaps).</td></tr>
+      <tr><td><strong>Inverted file + PQ / ScaNN-style</strong></td>
+        <td>IVF coarse routing + product-quantized residuals.</td>
+        <td>Very compact indexes; high throughput.</td>
+        <td>Not part of pgvector; appears in FAISS and dedicated engines.</td>
+        <td>Not in pgvector (relevant if you compare vendors).</td></tr>
+    </tbody>
+  </table></div>
+
+  <p>The dials, in one line each: HNSW builds with <code>m</code> (connections per node) and
+  <code>ef_construction</code> (build-time candidate width) — bigger = better recall, slower builds,
+  more memory; queries tune <code>ef_search</code> (search width per query, default 40). IVFFlat builds
+  with <code>lists</code> and queries with <code>probes</code>. DiskANN-family equivalents are
+  algorithm-specific but play the same role.</p>
+
+  <h2 id="quantization">5 · Quantization: the scale lever</h2>
+  <p>Quantization stores each vector with fewer bits, shrinking the index and the working set — at a
+  recall cost that is recovered by <strong>re-ranking with the original vectors</strong>. In pgvector:</p>
+  <ul>
+    <li><code>halfvec</code> — 16-bit floats: half the bytes, index up to 4,000 dims. Nearly free precision loss; the standard choice for <code>text-embedding-3-large</code> (3,072 dims).</li>
+    <li><code>binary_quantize()</code> → <code>bit</code> index — 32× smaller (1 bit/dim); the index only remembers each dimension's sign, so you fetch an oversampled candidate set and re-rank with the true vectors. Fast builds, small RAM at scale.</li>
+    <li>Subvector indexing (e.g. first 256 dims of a Matryoshka model) — index a prefix, re-rank full vectors.</li>
+    <li>Vendor variants: Timescale's <strong>SBQ</strong> (statistical binary quantization) inside StreamingDiskANN; PQ/SQ in dedicated engines.</li>
+  </ul>
+
+  <div class="box note">
+    <span class="tag">Sizing intuition</span>
+    <p><code>vector(1536)</code> = 4·1536+8 ≈ 6.1 KB/row. 1 M rows ≈ 6.1 GB of raw vectors, and an
+    HNSW index adds graph links on top (rule of thumb: budget ≥ the raw vector size in RAM for the
+    hot graph). The same corpus as <code>halfvec(1536)</code> halves that; binary-quantized it is
+    ~190 MB before re-ranking data. These estimates decide "can it stay in RAM", which decides
+    HNSW vs DiskANN-family vs quantized HNSW — see Part 2.</p>
+  </div>
+
+  <h2 id="eval">6 · Evaluation: recall is a product decision</h2>
+  <p>You cannot tune what you do not measure. The minimum honest harness:</p>
+  <ol>
+    <li>Freeze a sample of real queries (or synthetic ones from real documents).</li>
+    <li>Compute ground truth with <strong>exact</strong> search (pgvector default; parallel sequential scan).</li>
+    <li>Run the ANN query at various <code>ef_search</code>/<code>probes</code>; compute <code>recall@k</code> = |ANN top-k ∩ exact top-k| / k.</li>
+    <li>Plot recall vs p50/p95 latency; pick the operating point that meets the product requirement.</li>
+    <li>Re-run this after every major data-model change, index rebuild, or pgvector upgrade.</li>
+  </ol>
+  <p>For relevance quality (not just index fidelity), you need judgment: humans or a cross-encoder
+  scoring query–document pairs. Index recall is necessary, never sufficient — perfect recall of a
+  bad embedding space is still bad search.</p>
+
+  <h2 id="glossary">7 · Working glossary</h2>
+  <div class="table-wrap"><table>
+    <thead><tr><th>Term</th><th>Meaning in this report</th></tr></thead>
+    <tbody>
+      <tr><td>kNN / ANN</td><td>k-nearest neighbors; Approximate = index-based, sub-linear, inexact.</td></tr>
+      <tr><td>Recall@k</td><td>Fraction of the true top-k that the index returned. The honest currency of ANN.</td></tr>
+      <tr><td>Vector database</td><td>Storage + ANN index + metadata filtering + API around vectors (Pinecone, Qdrant, Milvus…), as opposed to a library (FAISS) or an extension (pgvector).</td></tr>
+      <tr><td>pgvector</td><td>The PostgreSQL extension adding vector types, operators, and HNSW/IVFFlat indexes. Not a separate server.</td></tr>
+      <tr><td>Over-filtering</td><td>ANN returns k candidates, the WHERE clause then kills most of them → fewer results than asked. Fixed by iterative scans, partial indexes, partitions, or oversampling.</td></tr>
+      <tr><td>Hybrid search</td><td>Lexical (BM25/Postgres FTS) + dense-vector retrieval fused, typically by Reciprocal Rank Fusion.</td></tr>
+      <tr><td>Cross-encoder re-rank</td><td>Second stage: a heavier model rescores the shortlist for precision. Model-side, not a database feature.</td></tr>
+      <tr><td>Re-embedding</td><td>Recomputing all vectors with a new model. A batch job with cost proportional to corpus × token price.</td></tr>
+    </tbody>
+  </table></div>
+
+  <div class="pager">
+    <a href="index.html">← Overview</a>
+    <a class="next" href="02_postgresql_pgvector.html">Part 2 — PostgreSQL &amp; pgvector →</a>
+  </div>
+
+</div>
+</main>
+
+<footer class="site-foot">
+  <div class="wrap">
+    <span>Vector Databases Investigation · Part 1 · Sources listed on the <a href="index.html#sources">overview page</a>.</span>
+    <span>pgvector 0.8.7 · PostgreSQL 13–18 · October 2026</span>
+  </div>
+</footer>
+
+</body>
+</html>

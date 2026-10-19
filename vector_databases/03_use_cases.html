@@ -1,0 +1,202 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Part 3 — Use cases that hold up | Vector Databases Investigation</title>
+<meta name="description" content="The legitimate use cases for vector search — semantic search, RAG, recommendations, dedup, matching, image retrieval — each with a Postgres recipe, strict caveats, and a bail-out condition.">
+<link rel="stylesheet" href="assets/report.css">
+</head>
+<body>
+
+<header class="top">
+  <div class="wrap">
+    <a class="brand" href="index.html">
+      <span class="brand-icon">V<i>D</i>B</span>
+      <span><b>Vector Databases Investigation</b><small>SQL Mastery · field report</small></span>
+    </a>
+    <nav>
+      <a href="index.html">Overview</a>
+      <a href="01_foundations.html">1 · Foundations</a>
+      <a href="02_postgresql_pgvector.html">2 · PostgreSQL</a>
+      <a class="current" href="03_use_cases.html">3 · Use cases</a>
+      <a href="04_when_not_to_use.html">4 · When NOT to use</a>
+    </nav>
+  </div>
+</header>
+
+<section class="hero">
+  <div class="wrap">
+    <p class="eyebrow">Part 3 of 4 · Where vectors earn their keep</p>
+    <h1>Eight use cases<br>that survive scrutiny.</h1>
+    <p>Each entry states the <em>signal</em> that it's genuinely a vector problem, the Postgres
+    implementation, the strict caveat, and the <em>bail-out condition</em> — the point at which the
+    honest answer stops being "add vectors". Read the bail-outs as part of the use case.</p>
+  </div>
+</section>
+
+<main>
+<div class="wrap">
+
+  <div class="box rule">
+    <span class="tag">The admission test — run every idea through it</span>
+    <ol>
+      <li>Can you name the real query? "Find the policy about vacation" is a meaning-shaped query;
+      "all orders over $500" is not. If every query maps to typed columns and predicates, vectors add
+      risk, not value.</li>
+      <li>Can you build an evaluation set (queries + expected results)? If you can't measure
+      relevance, you can't ship retrieval — you can only hope.</li>
+      <li>Do you have an embedding model whose training objective matches your similarity ("paraphrase",
+      "same topic", "same product", "same face")? Mismatched objective = confident nonsense.</li>
+    </ol>
+    <p>All three yes → proceed. Any no → fix that first, or don't build this.</p>
+  </div>
+
+  <h2 id="uc1">1 · Semantic search over documents, tickets, product copy</h2>
+  <p><strong>Signal:</strong> users search with questions and vocabulary that differs from your corpus;
+  keyword search under-finds. <strong>What to embed:</strong> chunks (300–800 tokens) or whole short
+  documents. <strong>Why it works:</strong> cosine neighborhoods capture paraphrase — "how do I take
+  time off" finds the PTO policy that never says those words.</p>
+  <pre><code>-- exact search first; add HNSW when measured too slow
+SELECT id, title FROM docs
+ORDER BY embedding &lt;=&gt; :q LIMIT 10;</code></pre>
+  <p><strong>Strict caveats:</strong> ship it hybrid (FTS leg for identifiers — Part 2 §7); chunking
+  strategy matters more than index choice; embedding model upgrades are a full re-embedding batch job.</p>
+  <p><strong>Bail-out:</strong> if your queries are mostly exact tokens (SKUs, error codes, clause
+  numbers), Postgres FTS or pg_trgm alone will beat vector search — see Part 4 §2.</p>
+
+  <h2 id="uc2">2 · RAG retrieval for LLM applications</h2>
+  <p><strong>Signal:</strong> an LLM must ground answers in your corpus; the prompt needs the right
+  5–15 chunks. <strong>Why vectors:</strong> the model's question phrasing rarely matches document
+  phrasing. <strong>Implementation:</strong> the worked schema in Part 2 §10 — chunks, metadata,
+  HNSW + GIN in one table, RRF fusion, optional cross-encoder re-rank in the app tier.</p>
+  <div class="box claim"><span class="tag">Hype check</span>
+    <p>RAG's failure modes are overwhelmingly <em>retrieval-quality</em> problems (bad chunks, bad
+    fusion, no re-rank, no eval), not database problems. The 2026 contrarian literature ("why you
+    shouldn't use vector databases for RAG") is mostly arguing against <em>vector-only</em> retrieval
+    and against buying a dedicated vector DB for what is usually a few-million-vector workload. Both
+    arguments land on this report's side of the ledger: hybrid retrieval, Postgres unless a Part 4
+    trigger says otherwise.</p>
+  </div>
+  <p><strong>Bail-out:</strong> if the answer always sits in one typed field or a JOIN answers it,
+  that's a query — generate SQL/tool calls, don't embed.</p>
+
+  <h2 id="uc3">3 · Recommendations and "similar items"</h2>
+  <p><strong>Signal:</strong> "more like this" over catalog entities; no labels, no behavior log yet,
+  or content-based similarity is the product. <strong>What to embed:</strong> item title+description
+  (or image+text multimodal). <strong>Postgres recipe:</strong> neighbors-of-a-row in one statement:</p>
+  <pre><code>SELECT id, title, 1 - (embedding &lt;=&gt; (SELECT embedding FROM items WHERE id = :id)) AS sim
+FROM items WHERE id &lt;&gt; :id AND status = 'active'
+ORDER BY embedding &lt;=&gt; (SELECT embedding FROM items WHERE id = :id)
+LIMIT 12;</code></pre>
+  <p><strong>Strict caveats:</strong> content similarity ≠ taste; once you have behavioral data,
+  co-occurrence/collaborative signals usually beat raw content embeddings — consider storing trained
+  item embeddings instead of text embeddings. Deduplicate the catalog first: near-identical listings
+  crowd out diversity (use case 4 is your prerequisite).</p>
+  <p><strong>Bail-out:</strong> ranking is dominated by rules/inventory/margin — vectors at most
+  generate a candidate set; the SQL after it decides.</p>
+
+  <h2 id="uc4">4 · Near-duplicate detection and content dedup</h2>
+  <p><strong>Signal:</strong> ingesting from many feeds; contracts/case law with reused clauses;
+  UGC needing "already asked / already posted" checks; image spam. <strong>Why vectors shine:</strong>
+  paraphrase-level duplication defeats hashes and FTS but is exactly what cosine distance measures.</p>
+  <pre><code>-- gate on insert: is this (near-)duplicate of something we have?
+SELECT id, 1 - (embedding &lt;=&gt; :new_emb) AS similarity
+FROM documents
+ORDER BY embedding &lt;=&gt; :new_emb LIMIT 1;
+-- application rule: similarity &gt; 0.95 ⇒ flag/reject; 0.85–0.95 ⇒ human review
+
+-- image perceptual hashes: binary vectors + Hamming distance, no ANN even needed at moderate scale
+SELECT id FROM image_hashes ORDER BY phash &lt;~&gt; :new_hash LIMIT 5;</code></pre>
+  <p><strong>Strict caveats:</strong> distance thresholds must be set on your data, not copied from a
+  blog; near-dup detection quality is a property of the embedding model. Threshold-based flags need an
+  eval set with human labels, or you're calibrating blind.</p>
+  <p><strong>Bail-out:</strong> exact re-posting (byte-identical) — a hash column with a B-tree is
+  cheaper and exact.</p>
+
+  <h2 id="uc5">5 · Candidate matching: résumés↔jobs, entities↔entities, products↔products</h2>
+  <p><strong>Signal:</strong> two free-text populations to pair up; hard filters first (location,
+  date, price), fuzzy similarity last. <strong>Pattern:</strong> SQL enforces the contract, vectors
+  score the vibe:</p>
+  <pre><code>SELECT c.id, 1 - (c.embedding &lt;=&gt; j.embedding) AS fit
+FROM candidates c
+WHERE c.availability &lt;= 30 AND c.relocated IS NOT TRUE   -- typed predicates do the real filtering
+ORDER BY c.embedding &lt;=&gt; j.embedding                      -- vectors only order the survivors
+LIMIT 25;</code></pre>
+  <p><strong>Strict caveats:</strong> this is the highest-harm use case on the list: embedding
+  "similarity" encodes everything the model saw. For anything touching hiring, credit, housing —
+  audit for protected-attribute proxies, keep the vector score advisory, and document the human
+  decision path. Embedding models trained on generic text underperform on domain language (legal,
+  medical, code): evaluate domain-appropriate models (e.g. legal-tuned embeddings measurably move
+  CUAD-style scores in 2026 tests).</p>
+  <p><strong>Bail-out:</strong> if matching rules are rule-expressible ("same tax ID", "same phone"),
+  rules first, vectors never.</p>
+
+  <h2 id="uc6">6 · Image / audio / multimodal retrieval</h2>
+  <p><strong>Signal:</strong> search a media library by concept ("outdoor portrait at dusk"), or find
+  visually similar assets. <strong>Implementation:</strong> CLIP-family / multimodal embedding models
+  put images and text in one vector space; store <code>halfvec</code> in Postgres beside the asset
+  metadata; query with text or image embeddings identically.</p>
+  <p><strong>Strict caveats:</strong> 2026's multimodal embedding-inversion research (IEEE TDSC) shows
+  leaked CLIP embeddings can be reconstructed into recognizable private images with generative
+  models — media embeddings are personal data in the GDPR sense when the media is. Granularity is
+  coarse; expect "right concept, wrong photo" and design the UI around it.</p>
+  <p><strong>Bail-out:</strong> classical CV needs (counting, detection, measurement) — that's not a
+  similarity search; use a CV pipeline.</p>
+
+  <h2 id="uc7">7 · Anomaly and drift monitoring over embedding spaces</h2>
+  <p><strong>Signal:</strong> "which incoming documents/transactions/users look unlike the corpus".
+  Mean distance to k nearest neighbors is an outlier score; centroid drift over time slices is a
+  distribution-drift alarm. Postgres does this with plain SQL + pgvector aggregates:</p>
+  <pre><code>-- daily centroid drift: distance between yesterday's and today's embedding centroid
+SELECT 1 - (AVG(embedding) FILTER (WHERE created_at &gt;= now() - interval '1 day')
+         &lt;=&gt; AVG(embedding) FILTER (WHERE created_at &lt;  now() - interval '1 day')) AS drift
+FROM documents;</code></pre>
+  <p><strong>Strict caveats:</strong> anomaly scores need labeled incidents to calibrate thresholds;
+  drift alarms without a response plan are noise.</p>
+  <p><strong>Bail-out:</strong> tabular anomaly detection (numeric distributions, segment counts) —
+  statistical tools on the relational columns, not embeddings.</p>
+
+  <h2 id="uc8">8 · Classification / triage by k-NN vote on labels</h2>
+  <p><strong>Signal:</strong> you have thousands of human-labeled items and want cheap triage of new
+  ones (support tickets → queues, content → review category). <strong>Pattern:</strong> take the top-k
+  neighbors of the new item's embedding and majority-vote their labels; label taxonomy changes don't
+  require re-embedding — only labels change.</p>
+  <p><strong>Strict caveats:</strong> minority classes are systematically outvoted (weight votes by
+  distance or inverse class frequency); label drift poisons the "model"; for high-stakes classification
+  a trained classifier with metrics beats vibes.</p>
+  <p><strong>Bail-out:</strong> stable, well-populated classes and volume — train a real classifier;
+  k-NN voting is bootstrap-era machinery, useful while labels are scarce.</p>
+
+  <h2 id="summary">Use-case → recipe summary</h2>
+  <div class="table-wrap"><table>
+    <thead><tr><th>Use case</th><th>pgvector specifics</th><th>Non-negotiable companion</th></tr></thead>
+    <tbody>
+      <tr><td>Semantic document search</td><td>HNSW cosine + partial index on status; ef_search ~64–128</td><td>FTS leg (hybrid), chunking eval</td></tr>
+      <tr><td>RAG</td><td>halfvec for big models; iterative scans for tenant filters</td><td>RRF fusion, re-rank, retrieval eval set</td></tr>
+      <tr><td>Recommendations</td><td>neighbors-of-row query; exact fine at catalog scale</td><td>Dedup first; behavioral data when it exists</td></tr>
+      <tr><td>Near-dup / dedup</td><td>threshold queries; <code>bit</code> + Hamming for hashes</td><td>Human-labeled calibration set</td></tr>
+      <tr><td>Matching</td><td>typed predicates, vector ORDER BY last</td><td>Fairness audit, advisory-only scores</td></tr>
+      <tr><td>Multimodal</td><td>halfvec(512–1152) from CLIP-family models</td><td>Treat embeddings as personal data</td></tr>
+      <tr><td>Anomaly / drift</td><td>aggregates + distance math</td><td>Incident labels for thresholds</td></tr>
+      <tr><td>k-NN triage</td><td>top-k labels majority vote</td><td>Distance-weighted votes; exit plan to a classifier</td></tr>
+    </tbody>
+  </table></div>
+
+  <div class="pager">
+    <a href="02_postgresql_pgvector.html">← Part 2 — PostgreSQL &amp; pgvector</a>
+    <a class="next" href="04_when_not_to_use.html">Part 4 — When NOT to use →</a>
+  </div>
+
+</div>
+</main>
+
+<footer class="site-foot">
+  <div class="wrap">
+    <span>Vector Databases Investigation · Part 3 · Bail-out conditions are the point of this page.</span>
+    <span>Sources on the <a href="index.html#sources">overview page</a>.</span>
+  </div>
+</footer>
+
+</body>
+</html>

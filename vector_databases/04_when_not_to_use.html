@@ -1,0 +1,267 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Part 4 — When NOT to use vector databases | Vector Databases Investigation</title>
+<meta name="description" content="Strict rules for when vector databases are the wrong tool, the anti-pattern catalog, embedding privacy risks, and the honest short list of when a dedicated vector DB is correct.">
+<link rel="stylesheet" href="assets/report.css">
+</head>
+<body>
+
+<header class="top">
+  <div class="wrap">
+    <a class="brand" href="index.html">
+      <span class="brand-icon">V<i>D</i>B</span>
+      <span><b>Vector Databases Investigation</b><small>SQL Mastery · field report</small></span>
+    </a>
+    <nav>
+      <a href="index.html">Overview</a>
+      <a href="01_foundations.html">1 · Foundations</a>
+      <a href="02_postgresql_pgvector.html">2 · PostgreSQL</a>
+      <a href="03_use_cases.html">3 · Use cases</a>
+      <a class="current" href="04_when_not_to_use.html">4 · When NOT to use</a>
+    </nav>
+  </div>
+</header>
+
+<section class="hero">
+  <div class="wrap">
+    <p class="eyebrow">Part 4 of 4 · The strict section</p>
+    <h1>When a vector database<br>is the wrong tool.</h1>
+    <p>The most expensive database decision of the 2020s has been buying a second stateful system to
+    answer questions SQL could answer. This page draws the line: ten hard "don't" rules, the
+    anti-pattern catalog, the privacy ledger, and — to stay honest — the short list of triggers where
+    a dedicated vector database is genuinely the right call.</p>
+  </div>
+</section>
+
+<main>
+<div class="wrap">
+
+  <div class="toc">
+    <p>Contents</p>
+    <ol>
+      <li><a href="#rules">Ten rules: do not use vector search when…</a></li>
+      <li><a href="#antipatterns">The anti-pattern catalog</a></li>
+      <li><a href="#privacy">The privacy ledger: embeddings are not obfuscated text</a></li>
+      <li><a href="#dedicated">When a dedicated vector database IS the right answer</a></li>
+      <li><a href="#dualstore">Postgres + search engine: the dual-store compromise</a></li>
+      <li><a href="#tree">The decision tree, in words</a></li>
+      <li><a href="#checklists">Sign-off checklists</a></li>
+    </ol>
+  </div>
+
+  <h2 id="rules">1 · Ten rules: do not use vector search when…</h2>
+  <ol>
+    <li><strong>…the query maps to typed columns and predicates.</strong> "Orders over $500 last week"
+    is a WHERE clause. Vectors can only make this slower, fuzzier, and unauditable. If you can write
+    it in SQL, write it in SQL.</li>
+    <li><strong>…exact identifiers carry the meaning.</strong> SKUs, error codes, API paths, contract
+    clause numbers, drug names: dense retrieval blurs tokens that must not blur. Postgres FTS,
+    pg_trgm, or a plain B-tree beats ANN here — and published practitioner numbers back it (one 2026
+    stress test: BM25 P95 6–9 ms vs HNSW P95 18–30 ms on the same corpus). Hybrid keeps vectors as a
+    <em>second</em> signal, never the only one.</li>
+    <li><strong>…the corpus is small.</strong> Under roughly 100 k vectors, exact search is already
+    milliseconds; adding an ANN index buys latency you don't need while silently spending recall.
+    A few 2026 RAG tutorials run millions of documents' vectors from a numpy array — a database
+    (vector or otherwise) isn't the hard part; retrieval quality is.</li>
+    <li><strong>…100% recall is a requirement.</strong> Completeness is a legal and medical necessity
+    ("every document mentioning this clause"). ANN is approximate by construction; even tuned HNSW
+    can miss true neighbors after rebuilds. Use exhaustive/lexical methods, or ANN only as a first
+    pass you provably overfetch.</li>
+    <li><strong>…the system must be explainable and deterministic.</strong> Regulators, auditors, and
+    incident reviews need "why this result". A cosine distance of 0.61 in a 1,536-dim space is not an
+    explanation, and the answer can change under index tuning. Rules + lexical retrieval give you
+    reproducible justifications.</li>
+    <li><strong>…you cannot build an evaluation set.</strong> If nobody can say which results are
+    right, you cannot tune ef_search, choose a model, or prove the feature works. No eval → no
+    vector feature. (This is a product-readiness rule, not a database rule — and it fails more often
+    than any technical one.)</li>
+    <li><strong>…the vocabulary is controlled.</strong> Internal tools with a known synonym set:
+    a thesaurus/synonym table + FTS is exact, maintainable, and debuggable. Embeddings pay continuous
+    cost to solve a discrete problem.</li>
+    <li><strong>…the corpus churns wholesale and freshness is contractual.</strong> UPDATE in
+    Postgres = DELETE + INSERT: heavy re-embedding churn bloats HNSW graphs, slows vacuum, and forces
+    reindex cycles; ANN indexes in dedicated engines have their own compaction costs. If your pipeline
+    rewrites the whole index hourly, fix the pipeline before choosing the store — and design for
+    partition-and-swap instead of update-in-place.</li>
+    <li><strong>…the content is sensitive and unredacted, and you'd store vectors in a weaker trust
+    zone than the text.</strong> See §3: embeddings reconstruct. Do not use a third-party vector
+    service to hold "just the vectors" of confidential data on the theory that vectors are anonymous.</li>
+    <li><strong>…you don't yet have the problem.</strong> "We need AI search" before anyone has typed
+    a query that keyword search failed. Every legitimate vector project starts from a named failure of
+    lexical retrieval.</li>
+  </ol>
+
+  <h2 id="antipatterns">2 · The anti-pattern catalog</h2>
+  <div class="table-wrap"><table>
+    <thead><tr><th>Anti-pattern</th><th>What goes wrong</th><th>Correct move</th></tr></thead>
+    <tbody>
+      <tr><td>Embeddings in a <code>jsonb</code>/text column with app-side math</td>
+        <td>No operators, no indexes, no dimension checks, slow serialization</td>
+        <td><code>vector(n)</code>/<code>halfvec(n)</code> with a CHECK on dimensions</td></tr>
+      <tr><td>One shared HNSW index for thousands of tenants</td>
+        <td>Big tenants crowd the graph; small tenants get bad recall and variable latency; filters over-prune (see Part 2 §5 math)</td>
+        <td>Partition by tenant (LIST), per-tenant tables, or B-tree-filtered exact search for small tenants</td></tr>
+      <tr><td>Default <code>ef_search = 40</code> with a selective WHERE and pre-0.8 pgvector</td>
+        <td>"Returns 3 rows instead of 10" — classic over-filtering</td>
+        <td>Upgrade + <code>hnsw.iterative_scan</code>, partial index, or oversample-and-filter</td></tr>
+      <tr><td>Cosine on zero vectors / NULL embeddings</td>
+        <td>Rows silently excluded from the index (pgvector skips them) and vanish from results</td>
+        <td>Ingest validation; CHECK constraints; count indexed rows vs table rows</td></tr>
+      <tr><td>Mixing embedding models in one column/index</td>
+        <td>Two incompatible geometries in one graph → silent relevance collapse</td>
+        <td><code>embedding_model</code> column, partial indexes per model, dual-run + backfill on switch</td></tr>
+      <tr><td>Vector-only retrieval for enterprise search/RAG</td>
+        <td>Misses SKU/code/clause lookups; confidently cites "kind of similar" documents</td>
+        <td>Hybrid (FTS+vector) with RRF; re-rank; eval both legs</td></tr>
+      <tr><td>Buying a dedicated vector DB because a tutorial used one</td>
+        <td>Second system with its own backups, auth, sync, and bill — for a workload Postgres serves</td>
+        <td>pgvector first; require a §4 trigger before adopting another store</td></tr>
+      <tr><td>Treating the similarity score as a trustworthy probability</td>
+        <td>Thresholds copied from blogs; cosine values are model-specific, uncalibrated</td>
+        <td>Calibrate thresholds on labeled pairs from your corpus</td></tr>
+      <tr><td><code>ORDER BY 1 - (embedding &lt;=&gt; :q) DESC</code></td>
+        <td>Expression around the operator defeats the index; full scans in production</td>
+        <td>Indexable shape: <code>ORDER BY embedding &lt;=&gt; :q LIMIT k</code>; convert similarity at the SELECT list</td></tr>
+      <tr><td>No recall monitoring after go-live</td>
+        <td>Data drift / pgvector upgrades silently degrade results for months</td>
+        <td>Sampled exact-vs-ANN comparison (Part 2 §9) in CI and production</td></tr>
+    </tbody>
+  </table></div>
+
+  <h2 id="privacy">3 · The privacy ledger: embeddings are not obfuscated text</h2>
+  <p>The security literature is settled on this point: <strong>text embeddings can be inverted back
+  toward the original text.</strong> Milestones: Vec2Text and GEIA (2023) reconstructed sentences from
+  same-model embeddings; the ACL 2024 <em>Transferable Embedding Inversion Attack</em> did it
+  <em>without</em> access to the original model, using a surrogate, and showed it on a clinical
+  dataset; 2026 work extended this to zero-training cross-domain inversion (Zero2Text) and to
+  multimodal CLIP databases, where leaked embeddings were reconstructed into recognizable private
+  images (IEEE TDSC). Consequences for architecture:</p>
+  <ul>
+    <li>An embedding is subject to the same classification as its source text. "We only put vectors
+    in the vendor's cloud" is not a privacy control — it is an attack surface with a hosted inversion
+    target.</li>
+    <li>Deletion obligations (GDPR erasure, retention schedules) propagate to embedding columns,
+    search indexes, replicas, and backups. Vectors are easy to forget in a "right to be forgotten"
+    sweep because nobody thinks of them as text. Postgres helps here: the embedding row <em>is</em>
+    the record row — one DELETE, one backup story.</li>
+    <li>Mitigations are partial: pre-embedding redaction of PII, access control at the embedding
+    column (column grants/RLS), perturbation/DP approaches (research-grade, quality tradeoffs).
+    Minimization is the real control: embed what you need, not everything.</li>
+  </ul>
+  <div class="box warn"><span class="tag">Compliance rule</span>
+    <p>If the source text would require encryption-at-rest, access audit, and deletion propagation,
+    the embedding column inherits all three duties. In a threat model, treat "database of embeddings"
+    as "database of lightly-encoded text."</p>
+  </div>
+
+  <h2 id="dedicated">4 · When a dedicated vector database IS the right answer</h2>
+  <p>Honesty requires the inverse list. Each trigger is checkable — if you can't point to one in
+    writing, stay in Postgres:</p>
+  <ul>
+    <li><strong>Billions-scale retrieval with aggressive sharding</strong> (Milvus-class workloads;
+    the 2026 comparisons consistently place Milvus/Zilliz in this lane, with K8s-native ops and GPU
+    indexing — at real DevOps cost).</li>
+    <li><strong>Sub-20 ms p99 at sustained high QPS on pure similarity search</strong> — dedicated
+    engines optimize the single task; e.g. one 2026 roundup measured Qdrant p99 ≈ 12 ms at 10 M
+    vectors vs Weaviate ≈ 16 ms, Milvus ≈ 18 ms (comparison-article numbers; re-measure).</li>
+    <li><strong>Object-storage-native economics for huge corpora</strong> — Turbopuffer-style
+    S3-backed architectures are the cheapest $/GB at large scale; no Postgres extension replicates
+    that storage model.</li>
+    <li><strong>Zero-ops managed retrieval as a product requirement</strong> — Pinecone's real value
+    is not letting you own an index (serverless, autoscaling, enterprise compliance); you pay for it
+    in unit-based pricing and a second system.</li>
+    <li><strong>Native advanced retrieval pipelines as a package</strong> — Vespa-class hybrid +
+    re-ranking + multi-stage ranking; Weaviate's built-in vectorizer/BM25 hybrid (and 2026's MCP
+    server for agent access) genuinely compress app-tier work.</li>
+    <li><strong>Hard architectural isolation between retrieval and the OLTP system</strong> — when a
+    search spike must never touch the transactional database, a separate store is a firewall, not a
+    redundancy.</li>
+  </ul>
+  <div class="table-wrap"><table>
+    <thead><tr><th>2026 landscape</th><th>Class</th><th>Pick it when</th><th>Watch out</th></tr></thead>
+    <tbody>
+      <tr><td>pgvector (+pgvectorscale / VectorChord)</td><td>Postgres extension</td><td>Default for ≤ ~10–50 M vectors; data already in Postgres; want one system</td><td>You own tuning, vacuum, recall; extension availability varies on managed clouds</td></tr>
+      <tr><td>Pinecone</td><td>Managed service</td><td>Zero-ops, autoscaling, compliance needs</td><td>Unit-based cost at scale; lock-in; it's a second source of truth</td></tr>
+      <tr><td>Qdrant</td><td>OSS / managed</td><td>Self-host speed, payload filtering, quantization</td><td>You operate it; sync from your DB is your job</td></tr>
+      <tr><td>Weaviate</td><td>OSS / managed</td><td>Batteries-included hybrid (BM25+dense), vectorizer modules</td><td>Module system adds operational surface</td></tr>
+      <tr><td>Milvus / Zilliz</td><td>OSS / managed</td><td>Billions of vectors, GPU indexing, K8s shop</td><td>Heaviest self-host footprint in the class</td></tr>
+      <tr><td>Chroma</td><td>Embedded / OSS</td><td>Prototypes, local dev, notebooks</td><td>Not where production scale stories end</td></tr>
+      <tr><td>Turbopuffer</td><td>Managed, object-storage</td><td>Huge corpora, lowest $/GB, acceptable latency</td><td>Newer operational story</td></tr>
+      <tr><td>Vespa</td><td>OSS / managed</td><td>Full ranking pipelines at large scale</td><td>Biggest learning curve in the class</td></tr>
+      <tr><td>"Vectors where you already are": MongoDB Atlas, Elasticsearch/OpenSearch, Redis, ClickHouse, Cloudflare Vectorize</td><td>Built-in features</td><td>You already run that system and its filters are your access model</td><td>Same rule as pgvector: only beats a dedicated engine when integration is the win</td></tr>
+    </tbody>
+  </table></div>
+
+  <h2 id="dualstore">5 · Postgres + search engine: the dual-store compromise</h2>
+  <p>When §4 triggers are real but Postgres remains the source of truth, the standard 2026 pattern is
+  dual-store: Postgres holds documents, ACLs, and lifecycle; the retrieval system holds derived
+  indexes; sync is explicit (outbox pattern / logical decoding / the engine's connector), never
+  best-effort dual writes. Budget for the costs you just bought: sync lag (stale results), schema
+  drift, reconciliation jobs, and a re-index runbook. Test the boundary with a concrete question:
+  <em>what happens to retrieval correctness during a 10-minute sync outage?</em> If the honest answer
+  matters, Postgres-only (Part 2) was the right architecture.</p>
+
+  <h2 id="tree">6 · The decision tree, in words</h2>
+  <ol>
+    <li>Is the query meaning-shaped (can't be written as predicates) and do you have an eval set?
+    No → <strong>SQL / FTS / pg_trgm</strong>. Done. Most products stop here.</li>
+    <li>Is the data already in Postgres (or comfortable living there)? No, and it won't move →
+      go to the store your data is in; add vectors there (most 2026 engines have them).</li>
+    <li>Corpus size: &lt; ~100 k vectors → <strong>pgvector exact search, no ANN index</strong>.
+    100 k–10 M → <strong>pgvector + HNSW, tuned, hybrid leg, iterative scans</strong>.
+    10–50 M → <strong>pgvector + quantization / partitioning, or pgvectorscale / VectorChord</strong>.
+    &gt; ~50–100 M or any §4 trigger → dedicated engine as a <em>derived</em> index (dual-store), or
+    as primary if the workload is retrieval-native.</li>
+    <li>Any hard constraint that overrides the above? Determinism → ANN never owns the verdict.
+    Privacy → trust boundary of the store must match the text's classification. Freshness → fix
+    churn before storage choice.</li>
+    <li>Whichever you pick: commit a recall/latency/cost target (e.g. "recall@10 ≥ 95%, p95 ≤ 80 ms,
+    ≤ $X/1k queries") and re-measure at every upgrade. The number, not the brand, is the architecture.</li>
+  </ol>
+
+  <h2 id="checklists">7 · Sign-off checklists</h2>
+  <div class="box rule">
+    <span class="tag">Before writing the first vector query</span>
+    <div class="check"><ul>
+      <li>Named lexical failure it fixes (a query users actually typed)</li>
+      <li>Evaluation set frozen (≥ a few hundred query→relevant judgments)</li>
+      <li>Embedding model chosen with a matching objective; re-embedding cost priced</li>
+      <li>Data classification done — embeddings inherit text's privacy class</li>
+      <li>Recall/latency/cost targets written down</li>
+    </ul></div>
+  </div>
+  <div class="box rule">
+    <span class="tag">Before production (pgvector)</span>
+    <div class="check"><ul>
+      <li>Exact-search baseline measured; ANN added with a measured recall number</li>
+      <li>Indexable query shape verified in EXPLAIN; opclass matches the operator</li>
+      <li>Filter strategy chosen: B-tree exact / partial index / iterative scan / partition</li>
+      <li>Tenant isolation plan (partitions/tables + RLS) documented</li>
+      <li><code>embedding_model</code> column + CHECK on dimensions exist</li>
+      <li>vacuum/REINDEX CONCURRENTLY cadence tested on a copy with realistic churn</li>
+      <li>Recall watchdog (exact-vs-ANN sampling) scheduled</li>
+      <li>Backup/restore rehearsed with vector columns (size-aware)</li>
+      <li>Upgrade path tested: <code>ALTER EXTENSION vector UPDATE</code> on staging + recall harness re-run</li>
+    </ul></div>
+  </div>
+
+  <div class="pager">
+    <a href="03_use_cases.html">← Part 3 — Use cases</a>
+    <a class="next" href="index.html">Back to Overview →</a>
+  </div>
+
+</div>
+</main>
+
+<footer class="site-foot">
+  <div class="wrap">
+    <span>Vector Databases Investigation · Part 4 · Vendor numbers are labeled; re-measure before you deploy.</span>
+    <span>Sources on the <a href="index.html#sources">overview page</a>.</span>
+  </div>
+</footer>
+
+</body>
+</html>

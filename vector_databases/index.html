@@ -1,0 +1,186 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Vector Databases Investigation — Overview | SQL Mastery</title>
+<meta name="description" content="An evidence-based investigation of vector databases with PostgreSQL/pgvector at the center: what they are, when to use them, and when not to.">
+<link rel="stylesheet" href="assets/report.css">
+</head>
+<body>
+
+<header class="top">
+  <div class="wrap">
+    <a class="brand" href="index.html">
+      <span class="brand-icon">V<i>D</i>B</span>
+      <span><b>Vector Databases Investigation</b><small>SQL Mastery · field report</small></span>
+    </a>
+    <nav>
+      <a class="current" href="index.html">Overview</a>
+      <a href="01_foundations.html">1 · Foundations</a>
+      <a href="02_postgresql_pgvector.html">2 · PostgreSQL</a>
+      <a href="03_use_cases.html">3 · Use cases</a>
+      <a href="04_when_not_to_use.html">4 · When NOT to use</a>
+    </nav>
+  </div>
+</header>
+
+<section class="hero">
+  <div class="wrap">
+    <p class="eyebrow">Investigation · October 2026 · PostgreSQL 13–18 · pgvector 0.8.7</p>
+    <h1>Vector databases,<br>without the hype.</h1>
+    <p>What a vector database actually is, why PostgreSQL + pgvector is the right default for most
+    real workloads, where the genuine limits are, and the specific conditions under which a
+    dedicated vector database is the correct answer. Every claim below is dated, versioned, and
+    sourced; vendor benchmarks are labeled as vendor claims.</p>
+    <p class="meta">4 parts · decision matrix · worked SQL · sources with access dates</p>
+  </div>
+</section>
+
+<main>
+<div class="wrap">
+
+  <div class="box verdict">
+    <span class="tag">Verdicts up front</span>
+    <ol>
+      <li><strong>pgvector is the correct default for the majority of production vector workloads.</strong>
+      If your data already lives in PostgreSQL and your corpus is up to roughly 5–10 million vectors,
+      pgvector (0.8.x) with a tuned HNSW index is usually sufficient, and cheaper than operating a
+      second stateful system.</li>
+      <li><strong>A vector index is an approximate-search trade, not magic.</strong> pgvector's default
+      is exact search with 100% recall. Only add an ANN index (HNSW/IVFFlat) when brute force is
+      measurably too slow — you then accept recall loss and tuning work.</li>
+      <li><strong>Production retrieval is hybrid: lexical (BM25/full-text) + semantic (vectors) + re-ranking.</strong>
+      Vector-only retrieval reliably fails on exact identifiers — SKUs, error codes, contract clause
+      numbers, API paths. Treat hybrid as the baseline, not an upgrade.</li>
+      <li><strong>Dedicated vector databases are justified by specific, checkable conditions</strong> —
+      hundreds of millions of vectors, sub-20 ms p99 requirements, GPU indexing, hard isolation between
+      tenants, or object-storage-backed cost tiers — not by the phrase "AI-powered".</li>
+      <li><strong>Embeddings are sensitive data.</strong> Published embedding-inversion attacks can
+      reconstruct the original text. If the source text is personal or confidential, the embedding
+      column is subject to the same access control, retention, and deletion duties.</li>
+    </ol>
+  </div>
+
+  <div class="toc">
+    <p>How to read this investigation</p>
+    <div class="cards">
+      <a class="card" href="01_foundations.html">
+        <small>Part 1</small><b>Foundations</b>
+        <span>Embeddings, distance metrics, exact vs approximate search, HNSW / IVFFlat / DiskANN, quantization — the vocabulary the rest of the report argues with.</span>
+      </a>
+      <a class="card" href="02_postgresql_pgvector.html">
+        <small>Part 2</small><b>PostgreSQL &amp; pgvector</b>
+        <span>Types, limits, operators, indexes, filtered search and iterative scans, multi-tenancy, hybrid search with full-text, scaling paths, operations.</span>
+      </a>
+      <a class="card" href="03_use_cases.html">
+        <small>Part 3</small><b>Use cases that hold up</b>
+        <span>Semantic search, RAG, recommendations, near-duplicate detection, matching, image retrieval — each with a Postgres recipe and a bail-out condition.</span>
+      </a>
+      <a class="card" href="04_when_not_to_use.html">
+        <small>Part 4</small><b>When not to use them</b>
+        <span>The strict list of cases where vector databases are the wrong tool, the anti-pattern catalog, and the honest short list of when to pick a dedicated vendor.</span>
+      </a>
+    </div>
+  </div>
+
+  <h2 id="matrix">Decision matrix — the whole investigation in one table</h2>
+  <div class="table-wrap"><table>
+    <thead><tr><th>Your situation</th><th>Correct tool</th><th>Why</th></tr></thead>
+    <tbody>
+      <tr><td>Data is in Postgres; corpus &lt; ~5–10 M vectors; typical RAG/semantic-search latency budget (50–300 ms)</td>
+        <td><strong>Postgres + pgvector (HNSW)</strong></td>
+        <td>One system: joins, constraints, transactions, RLS, WAL, backups, replicas come free. Quantization (halfvec / binary) extends the headroom.</td></tr>
+      <tr><td>Corpus is small (&lt; ~100 k vectors)</td>
+        <td><strong>Postgres + pgvector, exact search, no ANN index</strong></td>
+        <td>Brute force is already milliseconds and has 100% recall. Adding HNSW trades away recall you didn't need to give up.</td></tr>
+      <tr><td>Users type exact tokens: order numbers, SKUs, error codes, clause IDs</td>
+        <td><strong>Postgres full-text search (GIN) or pg_trgm — possibly with vectors as a second signal</strong></td>
+        <td>Lexical matching is exact, explainable, and faster (P95 single-digit ms in published practitioner tests). Vectors blur identifiers.</td></tr>
+      <tr><td>10–100 M vectors, already on Postgres, RAM-constrained</td>
+        <td><strong>pgvector + quantization, or pgvectorscale (StreamingDiskANN) / VectorChord</strong></td>
+        <td>Keep Postgres as source of truth; move the index away from "entire graph in RAM" assumptions.</td></tr>
+      <tr><td>Hundreds of millions–billions of vectors, sustained high QPS, sub-20 ms p99, or GPU indexing</td>
+        <td><strong>Dedicated vector DB (Milvus, Qdrant, Pinecone, Turbopuffer…)</strong></td>
+        <td>Purpose-built sharding, quantization-on-write, and index families that Postgres extensions do not cover.</td></tr>
+      <tr><td>Hard per-tenant isolation or independent scaling of retrieval from the OLTP system</td>
+        <td><strong>Dedicated vector DB, or Postgres with per-tenant tables/partitions + replicas</strong></td>
+        <td>Shared ANN indexes leak recall (and noisy-neighbor latency) across tenants.</td></tr>
+      <tr><td>Retrieval must be deterministic, auditable, explainable (regulatory lookup, legal discovery)</td>
+        <td><strong>SQL predicates + full-text search; ANN only as a helper, never the authority</strong></td>
+        <td>ANN is approximate by construction: the same query after an index rebuild can return different rows.</td></tr>
+      <tr><td>Corpus changes wholesale every day (re-embedding everything)</td>
+        <td><strong>Redesign ingestion first; then Postgres with batching, or a dedicated system</strong></td>
+        <td>UPDATE in Postgres is delete+insert: churn bloats HNSW graphs and makes vacuum/reindex a routine chore.</td></tr>
+    </tbody>
+  </table></div>
+
+  <h2 id="numbers">Key numbers this report relies on</h2>
+  <div class="table-wrap"><table>
+    <thead><tr><th>Fact</th><th>Value (as of Oct 2026)</th><th>Source</th></tr></thead>
+    <tbody>
+      <tr><td>Latest pgvector release</td><td>0.8.7 (2026-10-01); supports Postgres 13–18; 0.8.0 (Oct 2024) added iterative index scans</td><td>pgvector CHANGELOG / postgresql.org announce</td></tr>
+      <tr><td>Indexable dimensions</td><td><code>vector</code> 2,000 · <code>halfvec</code> 4,000 · <code>bit</code> 64,000 · <code>sparsevec</code> 1,000 non-zero (storage without index: up to 16,000)</td><td>pgvector README</td></tr>
+      <tr><td>Storage per vector</td><td><code>vector</code>: 4·dims+8 bytes → <code>vector(1536)</code> ≈ 6.1 KB/row → 100 M rows ≈ 610 GB before any index</td><td>pgvector README + arithmetic</td></tr>
+      <tr><td>HNSW defaults</td><td><code>m = 16</code>, <code>ef_construction = 64</code>, <code>hnsw.ef_search = 40</code>, iterative scan <code>off</code>, <code>hnsw.max_scan_tuples = 20 000</code></td><td>pgvector README</td></tr>
+      <tr><td>IVFFlat defaults</td><td><code>lists = 100</code>, <code>ivfflat.probes = 1</code>; rules of thumb <code>lists ≈ rows/1000</code> (≤ 1 M rows) or <code>√rows</code> (&gt; 1 M), <code>probes ≈ √lists</code></td><td>pgvector README</td></tr>
+      <tr><td>Filtered ANN pitfall</td><td>Filter matches 10% of rows, <code>ef_search = 40</code> → on average ~4 results survive before iterative scans</td><td>pgvector README</td></tr>
+      <tr><td>Table size ceiling</td><td>32 TB per non-partitioned table (Postgres default), so storage is rarely the binding constraint — RAM and recall are</td><td>pgvector FAQ</td></tr>
+      <tr><td>Practitioner latency note</td><td>Same dataset: BM25 P95 ≈ 6–9 ms vs HNSW ANN P95 ≈ 18–30 ms</td><td>Medium practitioner stress-test write-up (single practitioner, not benchmark-graded)</td></tr>
+    </tbody>
+  </table></div>
+
+  <div class="box claim">
+    <span class="tag">Reading benchmarks honestly</span>
+    <p>Vendor numbers quoted in this report are labeled. Example: Timescale's widely-cited claim that
+    Postgres with pgvector + pgvectorscale beat Pinecone's storage-optimized index at 28× lower p95
+    latency and 75% lower cost was measured on 50 M 768-dim Cohere vectors at 99% recall, self-hosted
+    on EC2 — it is a vendor benchmark at a scale chosen to favor the architecture. It is directionally
+    useful evidence, not a universal constant. Any number you plan to deploy on should be re-measured
+    on your vectors, your filters, and your recall target.</p>
+  </div>
+
+  <h2 id="scope">Scope and method</h2>
+  <p>This is an engineering investigation, not a product review. Research window: October 2026.
+  Primary sources checked directly: the pgvector README and CHANGELOG (v0.8.7), postgresql.org release
+  announcement for 0.8.0, Timescale/TigerData's pgvectorscale documentation, ClickHouse's engineering
+  guidance on scaling Postgres vector search, Crunchy Data's hybrid-search guide, the dbi-services
+  DBA guide (indexes, March 2026), 2026 vector-database landscape comparisons, and the embedding-inversion
+  security literature (ACL 2024 transferable inversion, 2026 zero-training and multimodal extensions).
+  Secondary sources are blog-grade and are cited as such.</p>
+  <p>It complements this repository's <code>advanced_patterns/09_fulltext_search_geospatial.md</code>
+  (full-text search + PostGIS) — that lesson supplies the lexical half of the hybrid story told here.</p>
+
+  <h2 id="sources">Sources</h2>
+  <ol class="small">
+    <li>pgvector README &amp; CHANGELOG — github.com/pgvector/pgvector (accessed 2026-10-19; v0.8.7).</li>
+    <li>PostgreSQL Announce: "pgvector 0.8.0 Released!" — postgresql.org/about/news (Nov 2024).</li>
+    <li>TigerData (Timescale): "Pgvector Is Now As Fast As Pinecone At 75% Less Cost" + pgvectorscale GitHub README (vendor benchmark).</li>
+    <li>dbi-services: "pgvector — A Guide for DBA, Part 2: Indexes" (Mar 2026) — index families, 2,000-dim error, DiskANN landscape.</li>
+    <li>ClickHouse resources: "How to scale vector search in Postgres (pgvector) for RAG and AI agents" (2026).</li>
+    <li>Crunchy Data: "Hybrid Search Patterns with Postgres and pgvector" (iterative scans, partial indexes, oversample-then-filter).</li>
+    <li>Redis: "Full-Text Search for RAG: BM25 &amp; Hybrid Search"; Sphere Inc: "Enterprise RAG: BM25 + Vector Hybrid Search".</li>
+    <li>Medium (A. Chen): "What I Learned About BM25 While Stress-Testing Hybrid Search" (P95 figures).</li>
+    <li>2026 landscape comparisons: firecrawl.dev, iternal.ai, digitalapplied.com, metacto.com, dev.to (Qdrant p99 ≈ 12 ms at 10 M; Milvus 2.6 built-in BM25 — treat as comparison-article claims).</li>
+    <li>Sean Pedersen: "Postgres as Vector DB — a benchmark" (pgvectorscale vs VectorChord; independent, single-run).</li>
+    <li>Privacy: Huang et al., "Transferable Embedding Inversion Attack" (ACL 2024); "Zero2Text" zero-training inversion (arXiv 2026); "Inverting the Vault" multimodal inversion (IEEE TDSC 2026); "Your Embeddings Are PII" (2026 essay).</li>
+    <li>Embedding-model landscape: premai.io / pecollective.com / milvus.io model comparisons (2026; specs from vendor cards, scores are MTEB or vendor-reported).</li>
+  </ol>
+
+  <div class="pager">
+    <span></span>
+    <a class="next" href="01_foundations.html">Part 1 — Foundations →</a>
+  </div>
+
+</div>
+</main>
+
+<footer class="site-foot">
+  <div class="wrap">
+    <span>Vector Databases Investigation — part of the SQL Mastery repository.</span>
+    <span>Written October 2026 · verify versions before acting on specifics.</span>
+  </div>
+</footer>
+
+</body>
+</html>

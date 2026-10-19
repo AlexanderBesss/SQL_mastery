@@ -1,0 +1,352 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Part 2 — PostgreSQL &amp; pgvector deep dive | Vector Databases Investigation</title>
+<meta name="description" content="pgvector in production: types and limits, HNSW/IVFFlat tuning, filtered search and iterative scans, multi-tenancy, hybrid search, scaling paths, operations.">
+<link rel="stylesheet" href="assets/report.css">
+</head>
+<body>
+
+<header class="top">
+  <div class="wrap">
+    <a class="brand" href="index.html">
+      <span class="brand-icon">V<i>D</i>B</span>
+      <span><b>Vector Databases Investigation</b><small>SQL Mastery · field report</small></span>
+    </a>
+    <nav>
+      <a href="index.html">Overview</a>
+      <a href="01_foundations.html">1 · Foundations</a>
+      <a class="current" href="02_postgresql_pgvector.html">2 · PostgreSQL</a>
+      <a href="03_use_cases.html">3 · Use cases</a>
+      <a href="04_when_not_to_use.html">4 · When NOT to use</a>
+    </nav>
+  </div>
+</header>
+
+<section class="hero">
+  <div class="wrap">
+    <p class="eyebrow">Part 2 of 4 · The PostgreSQL case</p>
+    <h1>pgvector: vectors like<br>ordinary columns.</h1>
+    <p>pgvector is an extension, not a sidecar: vectors live in normal tables and inherit everything
+    Postgres already does — ACID, joins, constraints, row-level security, WAL, replication, PITR,
+    backup. This page is the strict engineering manual: what it guarantees, what it costs, and where
+    its real ceilings are (pgvector 0.8.7, Postgres 13–18, October 2026).</p>
+  </div>
+</section>
+
+<main>
+<div class="wrap">
+
+  <div class="toc">
+    <p>Contents</p>
+    <ol>
+      <li><a href="#status">Status, licensing, guarantees</a></li>
+      <li><a href="#types">Types and dimension limits</a></li>
+      <li><a href="#query">Query shapes the planner will (and won't) index</a></li>
+      <li><a href="#indexes">HNSW vs IVFFlat: choosing and tuning</a></li>
+      <li><a href="#filtering">Filtered search: the honest problem and 0.8's fix</a></li>
+      <li><a href="#tenancy">Multi-tenancy</a></li>
+      <li><a href="#hybrid">Hybrid search with Postgres full-text</a></li>
+      <li><a href="#scaling">Scaling ladder: quantization, DiskANN, sharding</a></li>
+      <li><a href="#ops">Operations: builds, vacuum, upgrades, monitoring</a></li>
+      <li><a href="#worked">A worked production schema</a></li>
+    </ol>
+  </div>
+
+  <h2 id="status">1 · Status, licensing, guarantees</h2>
+  <ul>
+    <li><strong>Current release:</strong> pgvector 0.8.7 (2026-10-01). Supports Postgres 13–18. Available from source, Docker (<code>pgvector/pgvector:pg18</code>), apt/yum, and effectively every managed Postgres (Supabase, Neon, RDS/Aurora, Azure, Cloud SQL, Timescale, Crunchy, Nile…).</li>
+    <li><strong>License:</strong> PostgreSQL license (permissive OSS) — no field in a vendor contract stands between you and your vectors.</li>
+    <li><strong>Full Postgres semantics:</strong> WAL-logged, so streaming replication, point-in-time recovery, <code>pg_dump</code>, and logical replication all just work on vector columns. Vectors participate in foreign keys, CHECK constraints, RLS policies, triggers, and joins.</li>
+    <li><strong>Capacity:</strong> 32 TB per non-partitioned table is the storage ceiling; in practice RAM, recall, and vacuum behavior bind long before storage does.</li>
+    <li><strong>Feature surface (0.8.x):</strong> exact + HNSW + IVFFlat search; <code>vector / halfvec / bit / sparsevec</code> types; L2, inner product, cosine, L1, Hamming, Jaccard; iterative index scans; binary/half-precision quantization via expression indexes; parallel builds; subvector indexing.</li>
+  </ul>
+
+  <h2 id="types">2 · Types and dimension limits</h2>
+  <div class="table-wrap"><table>
+    <thead><tr><th>Type</th><th>Element</th><th>Storage</th><th>Max stored</th><th>Max indexable</th><th>Use for</th></tr></thead>
+    <tbody>
+      <tr><td><code>vector(n)</code></td><td>float32</td><td>4·n + 8 bytes</td><td>16,000 dims</td><td><strong>2,000 dims</strong></td><td>Default dense embeddings (1536, 1024, 768).</td></tr>
+      <tr><td><code>halfvec(n)</code></td><td>float16</td><td>2·n + 8 bytes</td><td>16,000 dims</td><td><strong>4,000 dims</strong></td><td>Storage/RAM halving; 3,072-dim models (OpenAI 3-large) that would otherwise fail to index.</td></tr>
+      <tr><td><code>bit(n)</code></td><td>bit</td><td>n/8 + 8 bytes</td><td>1,048,560 dims (Postgres <code>bit</code> ceiling)</td><td>64,000 dims</td><td>Binary quantization, perceptual hashes; Hamming/Jaccard metrics.</td></tr>
+      <tr><td><code>sparsevec(n)</code></td><td>float32 (sparse)</td><td>8·nonzero + 16 bytes</td><td>16,000 nonzero</td><td>1,000 nonzero</td><td>SPLADE-style learned-sparse embeddings.</td></tr>
+    </tbody>
+  </table></div>
+  <p>Creating an HNSW index on a <code>vector(3072)</code> column is a hard error
+  (<code>column cannot have more than 2000 dimensions for hnsw index</code>). The three legitimate
+  answers: store as <code>halfvec</code>, index a quantized expression
+  (<code>binary_quantize(...)::bit</code>), or reduce dimensions at the model level (Matryoshka-style
+  output). A bare <code>vector</code> column (no dimension modifier) can even mix dimensions per row —
+  useful when you version embedding models — but only same-dimension subsets can be indexed, via
+  partial + expression indexes.</p>
+
+  <h2 id="query">3 · Query shapes the planner will (and won't) index</h2>
+  <pre><code>-- The indexed shape: distance operator in ORDER BY, ASC, with LIMIT
+SELECT id, content
+FROM   documents
+ORDER  BY embedding &lt;=&gt; '[0.1, -0.2, ...]'   -- cosine
+LIMIT  10;
+
+-- NOT indexed: any expression around the operator or DESC on similarity
+SELECT id FROM documents
+ORDER  BY 1 - (embedding &lt;=&gt; '[...]') DESC      -- planner falls back to a full scan
+LIMIT 10;</code></pre>
+  <p>Other shapes worth knowing (all from the official README):</p>
+  <pre><code>-- "Neighbors of a row" (dedup / similar-items)
+SELECT * FROM items
+WHERE id != 1
+ORDER BY embedding &lt;-&gt; (SELECT embedding FROM items WHERE id = 1)
+LIMIT 5;
+
+-- Distance threshold (combine with ORDER BY + LIMIT to use the index)
+SELECT * FROM items WHERE embedding &lt;-&gt; '[3,1,2]' &lt; 5;
+
+-- Similarity score for display: cosine similarity = 1 - cosine distance
+SELECT id, 1 - (embedding &lt;=&gt; '[...]'::vector) AS similarity FROM documents ...;
+
+-- Aggregate helpers: AVG/sum work on vectors (useful for centroids, profiles)
+SELECT category_id, AVG(embedding) FROM items GROUP BY category_id;</code></pre>
+  <div class="box note"><span class="tag">Index-not-used triage</span>
+    <p>If <code>EXPLAIN (ANALYZE, BUFFERS)</code> shows a sequential scan: confirm the indexed
+    shape above; confirm an index with the matching opclass exists; on small tables a scan really is
+    cheaper — let the planner be right. To force an index while debugging:
+    <code>BEGIN; SET LOCAL enable_seqscan = off; …</code>. If a parallel scan looks too slow, the
+    planner is ignoring TOASTed vectors; try <code>ALTER COLUMN embedding SET STORAGE PLAIN</code>
+    (inline storage) for modest dimensions.</p>
+  </div>
+
+  <h2 id="indexes">4 · HNSW vs IVFFlat: choosing and tuning</h2>
+  <pre><code>-- HNSW (the default recommendation): build-time knobs
+CREATE INDEX CONCURRENTLY ON documents
+  USING hnsw (embedding vector_cosine_ops)
+  WITH (m = 16, ef_construction = 64);        -- defaults; raise ef_construction for recall
+
+-- Query-time dial (per session, or SET LOCAL per transaction)
+SET hnsw.ef_search = 100;                      -- default 40; bigger = better recall, slower
+
+-- IVFFlat (cheap builds, lower recall, needs data before build)
+CREATE INDEX ON documents
+  USING ivfflat (embedding vector_cosine_ops) WITH (lists = 1000);
+SET  ivfflat.probes = 30;                      -- start near sqrt(lists)</code></pre>
+  <div class="table-wrap"><table>
+    <thead><tr><th>Criterion</th><th>HNSW</th><th>IVFFlat</th></tr></thead>
+    <tbody>
+      <tr><td>Query speed at equal recall</td><td><strong>Better</strong></td><td>Worse</td></tr>
+      <tr><td>Build time / memory</td><td>Slower, hungrier</td><td><strong>Faster, lighter</strong></td></tr>
+      <tr><td>Empty / growing tables</td><td><strong>Build anytime; inserts keep quality</strong></td><td>Build <em>after</em> representative data; quality drifts as data drifts → schedule rebuilds</td></tr>
+      <tr><td>Parameter surface</td><td><code>m</code> 16, <code>ef_construction</code> 64, <code>ef_search</code> 40</td><td><code>lists</code> 100 (<code>rows/1000</code> ≤ 1 M rows, <code>√rows</code> above), <code>probes</code> 1</td></tr>
+      <tr><td>Recommendation</td><td><strong>Default choice for production.</strong></td><td>Only when build cost rules it in and you accept retrain cycles.</td></tr>
+    </tbody>
+  </table></div>
+  <p>Build accelerators: load data first, then index; raise <code>maintenance_work_mem</code> until
+  the "graph no longer fits" NOTICE appears (and no further); raise
+  <code>max_parallel_maintenance_workers</code>. In production use
+  <code>CREATE INDEX CONCURRENTLY</code>. Track progress via
+  <code>pg_stat_progress_create_index</code>. Remember: NULL vectors — and zero vectors under cosine —
+  are not indexed at all.</p>
+
+  <h2 id="filtering">5 · Filtered search: the honest problem and 0.8's fix</h2>
+  <p>The single most-misunderstood behavior: with ANN indexes, <strong>Postgres applies the WHERE
+  clause <em>after</em> the index scan</strong>. A filter matching 10% of rows with
+  <code>ef_search = 40</code> returns about <strong>4 rows</strong> when you asked for 10. pgvector's
+  own cost-estimation improvements (0.8) may steer selective queries to an exact plan — which is
+  often better: 100% recall, B-tree pre-filtering.</p>
+  <pre><code>-- Exact + B-tree is the correct first answer for selective filters
+CREATE INDEX ON documents (tenant_id);
+SELECT * FROM documents
+WHERE tenant_id = 42
+ORDER BY embedding &lt;=&gt; :q LIMIT 10;          -- exact kNN over the ~few hundred tenant rows
+
+-- pgvector 0.8: iterative scans keep pulling candidates until LIMIT is satisfied
+SET hnsw.iterative_scan = strict_order;        -- or relaxed_order (better recall, slight out-of-order)
+SET hnsw.max_scan_tuples = 20000;              -- stop-loss; default 20 000
+SET hnsw.scan_mem_multiplier = 2;              -- memory for the scan, multiple of work_mem
+SELECT * FROM documents
+WHERE status = 'published' AND lang = 'en'
+ORDER BY embedding &lt;=&gt; :q LIMIT 10;</code></pre>
+  <p>The decision ladder for <code>WHERE</code> + vector queries (Crunchy Data's framing, and the
+  README's, agree):</p>
+  <ol>
+    <li><strong>Filter matches a small slice</strong> (a tenant, "today's rows") → index the filter
+    column(s); let Postgres do exact kNN on the slice. Deterministic, 100% recall.</li>
+    <li><strong>Stable, low-cardinality filter queried constantly</strong> (e.g. <code>status =
+    'published'</code>) → <strong>partial HNSW index</strong>:
+    <code>… USING hnsw (embedding vector_cosine_ops) WHERE (status = 'published')</code>.</li>
+    <li><strong>Ad-hoc / compound filters</strong> → iterative scans (0.8), tune
+    <code>max_scan_tuples</code>; fall back to oversample-then-filter:
+    <code>WITH nearest AS MATERIALIZED (… ORDER BY embedding &lt;=&gt; :q LIMIT :k*20)
+    SELECT … FROM nearest WHERE … ORDER BY distance LIMIT :k</code>.</li>
+    <li><strong>Many distinct filter values</strong> → partitioning (below).</li>
+  </ol>
+  <div class="box warn"><span class="tag">Distance-predicate quirk</span>
+    <p>For <code>WHERE distance &lt; x</code> style filters, put the vector search in a materialized
+    CTE and apply the distance filter <em>outside</em> it (the README documents this executor
+    behavior). On relaxed_order scans, order strictly with <code>ORDER BY distance + 0</code>
+    (the <code>+ 0</code> is needed on Postgres 17+) in an outer query.</p>
+  </div>
+
+  <h2 id="tenancy">6 · Multi-tenancy</h2>
+  <p>pgvector's README is blunt: sharing one approximate index across tenants means one tenant's
+  vectors occupy graph/cluster capacity and degrade <em>everyone's</em> recall and latency. The
+  supported isolation tools are Postgres's own:</p>
+  <pre><code>-- Isolation by partition (README pattern)
+CREATE TABLE items (customer_id int, embedding vector(1536))
+  PARTITION BY LIST (customer_id);
+-- …or separate tables per tenant via your migration tool.
+-- Security stays with RLS regardless of layout:
+CREATE POLICY tenant_isolation ON documents
+  USING (tenant_id = current_setting('app.tenant_id')::int);</code></pre>
+  <p>RLS on a vector table works exactly like on any table — a genuine advantage over most dedicated
+  vector stores, whose access control is coarser. Combine: partitions (performance isolation) +
+  RLS (security isolation) + B-tree filtered exact search for small tenants.</p>
+
+  <h2 id="hybrid">7 · Hybrid search with Postgres full-text</h2>
+  <p>One of pgvector's structural wins: the lexical side (the <code>tsvector</code>/GIN machinery in
+  this repo's <code>advanced_patterns/09_fulltext_search_geospatial.md</code>) lives in the <em>same
+  table</em>, so fusion is a query, not a pipeline between two systems. Reciprocal Rank Fusion
+  combines rankings without reconciling incomparable scores:</p>
+  <pre><code>WITH vec AS (
+  SELECT id, ROW_NUMBER() OVER (ORDER BY embedding &lt;=&gt; :q) AS r
+  FROM documents ORDER BY embedding &lt;=&gt; :q LIMIT 50
+), lex AS (
+  SELECT id, ROW_NUMBER() OVER (ORDER BY ts_rank_cd(search_vector, q) DESC) AS r
+  FROM documents, websearch_to_tsquery('english', :text) q
+  WHERE search_vector @@ q LIMIT 50
+)
+SELECT d.id, COALESCE(1.0/(60+vec.r), 0) + COALESCE(1.0/(60+lex.r), 0) AS rrf
+FROM vec FULL OUTER JOIN lex USING (id)
+JOIN documents d USING (id)
+ORDER BY rrf DESC
+LIMIT 10;</code></pre>
+  <p>(pgvector's official examples ship RRF and cross-encoder re-ranking patterns in Python.)
+  Why bother: dense retrieval misses exact identifiers — SKUs, error codes, clause numbers, endpoint
+  paths — while BM25/FTS misses paraphrase. 2026 practitioner consensus across Redis, Crunchy Data,
+  and enterprise-RAG write-ups is that <strong>hybrid + re-rank is the production baseline</strong>;
+  vendor material reports ~26–31% retrieval gains for hybrid over dense-only (treat as vendor/marketing
+  grade, directionally consistent).</p>
+
+  <h2 id="scaling">8 · Scaling ladder: quantization, DiskANN, sharding</h2>
+  <p>Ordered by increasing operational commitment. Each rung buys roughly 2–30× working-set reduction
+  or moves the hot set off the RAM assumption.</p>
+  <ol>
+    <li><strong>Vertical scale + replicas.</strong> Postgres first: bigger box, hot standbys spread
+    read load (WAL-replicated indexes), PgBouncer in front. Boring, and it defers everything else.</li>
+    <li><strong>halfvec tables and/or half-precision indexing.</strong> ~50% of bytes; raise the
+    indexable-dimension ceiling to 4,000.
+    <pre><code>CREATE INDEX ON documents USING hnsw ((embedding::halfvec(1536)) halfvec_l2_ops);</code></pre></li>
+    <li><strong>Binary quantization with re-ranking.</strong> 32× smaller index; oversample, then
+    re-rank with the true vectors.
+    <pre><code>CREATE INDEX ON documents USING hnsw ((binary_quantize(embedding)::bit(1536)) bit_hamming_ops);
+
+SELECT * FROM (
+  SELECT * FROM documents
+  ORDER BY binary_quantize(embedding)::bit(1536) &lt;~&gt; binary_quantize(:q) LIMIT 100
+) half
+ORDER BY embedding &lt;=&gt; :q LIMIT 10;</code></pre></li>
+    <li><strong>Sharding on Postgres primitives.</strong> LIST partitions by tenant; Citus distributed
+    tables (official pgvector example); connection-level routing with PgDog. Note ClickHouse's
+    caution and Timescale's own: heavy UPDATE/DELETE churn bloats ANN graphs — batch and reuse.</li>
+    <li><strong>Disk-oriented indexes in-extension.</strong>
+    <ul>
+      <li><strong>pgvectorscale</strong> (Timescale; Rust/pgrx; needs pgvector): StreamingDiskANN +
+      SBQ — the index spans SSD, RAM holds compressed vectors; supports real-time inserts and
+      <code>get_next()</code>-style streaming filtering. Vendor benchmark (50 M 768-dim Cohere
+      vectors @99% recall): 28× lower p95 and 16× the throughput of Pinecone s1 at ~75% lower
+      self-hosted cost. Availability on managed providers varies; verify before committing.</li>
+      <li><strong>VectorChord</strong> (<code>vchordrq</code>): pre-filtering via bitmaps (filter
+        applied <em>inside</em> the search), better defaults per an independent 2026 benchmark
+        (94% recall @ ~23 ms vs DiskANN ~31 ms at 512-limit on SIFT-like data — single blog, single
+        run). Built-in IVF rerank options.</li>
+      <li><strong>pg_diskann</strong> (Microsoft): PQ-based DiskANN, mostly relevant on Azure
+      Postgres flexible server.</li>
+    </ul>
+    Practical thresholds pulled together from ClickHouse's 2026 guidance and practitioner posts:
+    pgvector HNSW comfortably serves ≤ ~1–10 M vectors (fit the graph in RAM); quantization/partial
+    indexes push that to ~10–50 M; DiskANN-family is the answer at 10 M+ when RAM is the constraint;
+    below ~1 M, HNSW-vs-everything-else barely matters — tune <code>ef_search</code> first.</li>
+    <li><strong>Then — and only then — a dedicated system.</strong> See Part 4's short list of
+    genuine triggers.</li>
+  </ol>
+
+  <h2 id="ops">9 · Operations: builds, vacuum, upgrades, monitoring</h2>
+  <div class="table-wrap"><table>
+    <thead><tr><th>Task</th><th>pgvector-specific practice</th></tr></thead>
+    <tbody>
+      <tr><td>Upgrade extension</td><td><code>ALTER EXTENSION vector UPDATE;</code> after installing the new binaries; check <code>SELECT extversion FROM pg_extension WHERE extname='vector';</code>. ANN rebuilds can change results — re-run your recall harness.</td></tr>
+      <tr><td>Vacuum with HNSW</td><td>Fast path: <code>REINDEX INDEX CONCURRENTLY idx; VACUUM tbl;</code> — vacuum of big HNSW graphs is slow; reindexing first is the README's documented speedup. Heavy churn (re-embedding) = frequent versions of this dance, or partition-and-drop instead of delete.</td></tr>
+      <tr><td>Backups</td><td>Everything standard works (<code>pg_dump</code>, basebackup, PITR) — but dumps get large: 100 M × 1536-dim vectors ≈ 610 GB of data before indexes. Plan transfer and restore time accordingly.</td></tr>
+      <tr><td>Recall monitoring</td><td>Sampled A/B: run the query exact (<code>SET LOCAL enable_indexscan = off;</code>) and compare result sets in production traffic (pgvector README's own technique). Alert on recall drift after rebuilds/upgrades/data shifts.</td></tr>
+      <tr><td>Index size / bloat</td><td><code>SELECT pg_size_pretty(pg_relation_size('idx'));</code> tracked over time; growth without data growth = dead-tuple pressure.</td></tr>
+      <tr><td>Statement monitoring</td><td>pg_stat_statements as usual; watch the kNN query's buffers — ANN scans should be index-dominated.</td></tr>
+      <tr><td>IVFFlat drift</td><td>Centroids reflect insertion-time distribution. After major distribution changes, rebuild; symptoms are recall loss, not errors.</td></tr>
+    </tbody>
+  </table></div>
+
+  <h2 id="worked">10 · A worked production schema</h2>
+  <pre><code>CREATE EXTENSION IF NOT EXISTS vector;
+
+CREATE TABLE doc_chunks (
+    id            bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    tenant_id     bigint        NOT NULL REFERENCES tenants(id),
+    doc_id        text          NOT NULL,
+    chunk         text          NOT NULL,
+    token_count   int,
+    lang          text          NOT NULL DEFAULT 'en',
+    status        text          NOT NULL DEFAULT 'published',
+    embedding_model text        NOT NULL,            -- model lock-in is a schema fact
+    embedding     halfvec(1536) NOT NULL CHECK (vector_dims(embedding) = 1536),
+    search_vector tsvector,                          -- lexical side, same table
+    created_at    timestamptz NOT NULL DEFAULT now()
+);
+
+-- keep the tsvector in sync (or use a STORED generated column)
+CREATE FUNCTION chunk_tsv() RETURNS trigger AS $$
+BEGIN
+  NEW.search_vector := setweight(to_tsvector('english', NEW.chunk), 'D');
+  RETURN NEW;
+END $$ LANGUAGE plpgsql;
+CREATE TRIGGER chunk_tsv_trigger BEFORE INSERT OR UPDATE ON doc_chunks
+  FOR EACH ROW EXECUTE FUNCTION chunk_tsv();
+
+-- retrieval indexes
+CREATE INDEX ON doc_chunks (tenant_id);                        -- exact + filter for small tenants
+CREATE INDEX ON doc_chunks USING gin (search_vector);          -- hybrid's lexical leg
+CREATE INDEX ON doc_chunks USING hnsw (embedding halfvec_cosine_ops)
+    WITH (m = 16, ef_construction = 64);
+
+-- security: vector data is tenant data
+CREATE POLICY chunk_access ON doc_chunks
+  USING (tenant_id = current_setting('app.tenant_id')::bigint);
+ALTER TABLE doc_chunks ENABLE ROW LEVEL SECURITY;</code></pre>
+  <p>Query (filtered ANN with iterative scan + hybrid fusion omitted for brevity):</p>
+  <pre><code>BEGIN;
+SET LOCAL hnsw.ef_search = 80;
+SET LOCAL hnsw.iterative_scan = relaxed_order;
+SELECT id, chunk, 1 - (embedding &lt;=&gt; :query_embedding::halfvec(1536)) AS similarity
+FROM   doc_chunks
+WHERE  tenant_id = :tenant AND status = 'published'
+ORDER  BY embedding &lt;=&gt; :query_embedding::halfvec(1536)
+LIMIT  10;
+COMMIT;</code></pre>
+  <p>That is the whole system: one table, one index set, standard Postgres ops. The costs — vacuum
+  behavior of HNSW, recall monitoring, re-embedding jobs — are real but ordinary database work.</p>
+
+  <div class="pager">
+    <a href="01_foundations.html">← Part 1 — Foundations</a>
+    <a class="next" href="03_use_cases.html">Part 3 — Use cases →</a>
+  </div>
+
+</div>
+</main>
+
+<footer class="site-foot">
+  <div class="wrap">
+    <span>Vector Databases Investigation · Part 2 · SQL verified against the pgvector 0.8.7 README.</span>
+    <span>Set <code>hnsw.iterative_scan</code> only where documented; defaults are deliberately off.</span>
+  </div>
+</footer>
+
+</body>
+</html>
