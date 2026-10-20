@@ -1,0 +1,404 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Part 5 — Evidence &amp; limits: benchmarks, failure modes, when not to use | LLM Wiki Investigation</title>
+<meta name="description" content="An honest assessment of Karpathy's LLM Wiki: what the benchmarks show, why wikis drift and compound errors, the security and permission problems, and when not to use the pattern.">
+<link rel="stylesheet" href="assets/report.css">
+</head>
+<body>
+
+<header class="top">
+  <div class="wrap">
+    <a class="brand" href="index.html">
+      <span class="brand-icon">L<i>W</i></span>
+      <span><b>LLM Wiki Investigation</b><small>SQL Mastery · field report</small></span>
+    </a>
+    <nav>
+      <a href="index.html">Overview</a>
+      <a href="01_idea.html">1 · The idea</a>
+      <a href="02_architecture.html">2 · Architecture</a>
+      <a href="03_graph.html">3 · Markdown as graph</a>
+      <a href="04_build.html">4 · Build it</a>
+      <a class="current" href="05_evidence.html">5 · Evidence</a>
+    </nav>
+  </div>
+</header>
+
+<section class="hero">
+  <div class="wrap">
+    <p class="eyebrow">Part 5 of 5 · Evidence &amp; limits</p>
+    <h1>It works until<br>it confidently drifts.</h1>
+    <p>The LLM Wiki is a strong pattern for the right corpus, and a dangerous one for the wrong
+    corpus. The difference is not the model. It is provenance, review, scope, and whether anyone
+    actually reads the wiki. This part separates what the evidence supports from what the essays
+    promise.</p>
+  </div>
+</section>
+
+<main>
+<div class="wrap">
+
+  <div class="toc">
+    <p>Contents</p>
+    <ol>
+      <li><a href="#claims">What Karpathy claims — and what he does not</a></li>
+      <li><a href="#benchmarks">What the benchmarks actually show</a></li>
+      <li><a href="#failure-modes">The failure modes that kill wikis</a></li>
+      <li><a href="#mitigations">Production guardrails that hold</a></li>
+      <li><a href="#when-not">When not to use an LLM Wiki</a></li>
+      <li><a href="#decision">Decision tree</a></li>
+      <li><a href="#ecosystem">The ecosystem and OKF</a></li>
+      <li><a href="#open">Open questions</a></li>
+      <li><a href="#sources">Sources</a></li>
+    </ol>
+  </div>
+
+  <h2 id="claims">1 · What Karpathy claims — and what he does not</h2>
+  <p>The idea file makes a design argument, not an empirical one. It says RAG re-derives synthesis
+  on every query; a compiled wiki accumulates it; the maintenance burden is the reason human wikis
+  die; an LLM can do the maintenance. Those are plausible and useful claims. They are not a
+  benchmark, and Karpathy does not present them as one.</p>
+
+  <div class="split">
+    <div class="box rule">
+      <span class="tag">What the essay does claim</span>
+      <ul>
+        <li>A persistent wiki compounds knowledge in a way stateless RAG does not.</li>
+        <li>Cross-references and contradictions can be maintained by an agent.</li>
+        <li>The schema is the key to disciplined behavior across sessions.</li>
+        <li>An index file works at moderate scale without embeddings.</li>
+        <li>Lint keeps the wiki healthy as it grows.</li>
+      </ul>
+    </div>
+    <div class="box warn">
+      <span class="tag">What it does not claim</span>
+      <ul>
+        <li>That the wiki is cheaper than RAG on every workload.</li>
+        <li>That an LLM-written claim is automatically trustworthy.</li>
+        <li>That markdown scales to enterprise multi-tenant use.</li>
+        <li>That lint can detect a confidently wrong but internally consistent page.</li>
+        <li>That the pattern replaces databases, search engines, or human review.</li>
+      </ul>
+    </div>
+  </div>
+
+  <p>This distinction matters because the discourse often collapses it. "Karpathy says LLM wikis are
+  better than RAG" is not what the essay says. It says the wiki is a better <em>shape</em> for
+  knowledge that accumulates. Whether it is better on your task is an empirical question, and the
+  evidence so far is mixed.</p>
+
+  <h2 id="benchmarks">2 · What the benchmarks actually show</h2>
+  <p>Independent tests appeared within weeks of the gist. They are small and heterogeneous, but they
+  converge on a useful shape: the wiki helps most when a question requires synthesizing multiple
+  sources, and helps least when the answer sits in one document. Cost is fiercely workload-dependent.</p>
+
+  <div class="table-wrap"><table>
+    <thead><tr><th>Study</th><th>Setup</th><th>Headline result</th><th>What it does not settle</th></tr></thead>
+    <tbody>
+      <tr>
+        <td><strong>Preregistered wiki vs RAG</strong><br><span class="small">arXiv 2605.18490, May 2026</span></td>
+        <td>24 papers, 13 questions, same answer model, blinded LLM judges. Wiki compiled from the papers vs single-round vector RAG.</td>
+        <td>Wiki much better at inter-paper synthesis (9.00–9.75 vs 3.50) and claim-level citation support (40.2% vs 18.9%). RAG met the single-fact lookup test. Wiki used ~21× more query tokens (1.65M vs 78k across 13 questions). No architecture won on all axes.</td>
+        <td>One small corpus; judge-based scoring; query harness disabled prompt caching; ingest cost ratio was not adjudicated because of cache accounting. A preprint, not a production benchmark.</td>
+      </tr>
+      <tr>
+        <td><strong>72-run migration benchmark</strong><br><span class="small">ROBOCO, May 2026</span></td>
+        <td>8 tasks × 3 techniques × 3 repetitions in a 30-repository migration workspace. Wiki vs direct reading (vanilla) vs Graphify.</td>
+        <td>Wiki: 350K tokens, 101 s, quality 16.0/25. Vanilla: 755K tokens, 167 s, quality 15.1. Wiki won 5 of 8 tasks, especially cross-language and external-source synthesis. Vanilla won exhaustive grep and one cross-domain lookup. Graphify: 617K, 180 s, 13.6.</td>
+        <td>One workload, one model stack, blog rather than peer review. It measures a code-migration workspace, not a personal research wiki.</td>
+      </tr>
+      <tr>
+        <td><strong>30-query agentic comparison</strong><br><span class="small">Author-published, April 2026</span></td>
+        <td>Same corpus and judge; RAG vs agentic RAG (same retriever in a multi-turn loop) vs wiki navigation; 30 queries.</td>
+        <td>RAG: 1,359 tokens/query, quality 4.48. Agentic RAG: 7,730 tokens/query, 4.73. Wiki: 18,373 tokens/query, 4.69. Agentic RAG beat the wiki 8–4–18 head-to-head.</td>
+        <td>Small sample; one corpus; author-run; the point is that turn budget and agentic retrieval close much of the gap, not that one architecture always wins.</td>
+      </tr>
+      <tr>
+        <td><strong>14-model compilation benchmark</strong><br><span class="small">Independent, 2026</span></td>
+        <td>14 models × 16 gold-labelled documents; same four-step compile loop; cross-vendor judge.</td>
+        <td>Top score 0.907 at $0.215/document; cheapest viable 0.874 at $0.0049/document; six arms within 0.06 of the top, spending up to 44× more. Above a quality floor, cost varies far more than quality.</td>
+        <td>One trial per document; uncalibrated judge; measures compilation quality, not wiki-vs-RAG architecture.</td>
+      </tr>
+    </tbody>
+  </table></div>
+
+  <div class="box claim">
+    <span class="tag">How to read these numbers</span>
+    <p>Do not average them into a single "wiki is X% better" claim. They measure different things:
+    answer synthesis, token cost, compilation quality, and code-task performance. What they agree on
+    is conditional: <strong>the wiki is a synthesis tool</strong>. It earns its cost when questions
+    span sources and the answer is reused. It loses when the answer is a single lookup or when a
+    simpler agentic retrieval loop can do the same work.</p>
+  </div>
+
+  <h3>The cost picture is genuinely mixed</h3>
+  <p>The intuition is that a wiki pays a large upfront ingest cost and then answers cheaply. The
+  preregistered study found the opposite on its setup: the wiki cost far more per query because the
+  agent read full pages. The 72-run benchmark found the wiki cheaper than reading raw files because
+  the alternative was even more context. Both can be true. Query cost depends on how many pages the
+  agent reads, how large they are, and whether prompt caching is in play.</p>
+
+  <div class="box warn">
+    <span class="tag">Do not quote a multiplier without the denominator</span>
+    <p>"21× more tokens" is meaningless without the workload. "54% fewer tokens" is meaningless
+    without the baseline. "71.5× fewer tokens" is an author claim on a particular corpus. Measure
+    tokens per <em>successful answer</em>, including retries, on your own questions.</p>
+  </div>
+
+  <h2 id="failure-modes">3 · The failure modes that kill wikis</h2>
+  <p>The field reports are remarkably consistent. The failures are not exotic model bugs; they are
+  structural properties of a persistent, LLM-written knowledge base. Plan for them.</p>
+
+  <div class="table-wrap"><table>
+    <thead><tr><th>Failure</th><th>How it happens</th><th>Mitigation</th></tr></thead>
+    <tbody>
+      <tr>
+        <td><strong>Compounding errors</strong></td>
+        <td>A plausible wrong summary becomes a prior. Other pages cite it. The wiki becomes internally consistent and externally wrong.</td>
+        <td>Claim-level provenance; human promotion gate; source-grounded verification; do not let summaries cite only other summaries.</td>
+      </tr>
+      <tr>
+        <td><strong>Silent source drift</strong></td>
+        <td>A source changes or is superseded, but the wiki page still states the old claim with confidence. Lint reads the wiki, not the world.</td>
+        <td>Store source hashes/mtimes; compare them with page <code>updated</code>; re-verify the oldest claims; timestamp every external fact.</td>
+      </tr>
+      <tr>
+        <td><strong>Index drift</strong></td>
+        <td>The agent updates <code>index.md</code> incrementally and misses pages. LLMs are not reliable at keeping a materialized index in sync.</td>
+        <td>Rebuild the index from the files during lint; treat the index as a cache, not a hand-maintained list.</td>
+      </tr>
+      <tr>
+        <td><strong>Volume bloat</strong></td>
+        <td>The agent writes pages because it can. The wiki grows faster than it is read, and the signal-to-noise ratio falls.</td>
+        <td>Write for questions you actually have; merge duplicates; delete low-value pages; measure reuse, not page count.</td>
+      </tr>
+      <tr>
+        <td><strong>Relevance pollution</strong></td>
+        <td>One corpus contains every domain. A debugging question inherits pricing analysis, personal notes, and unrelated sources.</td>
+        <td>Scope corpora by domain or task; route the agent to the right sub-wiki; do not load the whole index when a cluster will do.</td>
+      </tr>
+      <tr>
+        <td><strong>Single-user assumptions</strong></td>
+        <td>Plain markdown has no per-page ACL, no concurrency control, and no sensitivity labels. A shared repo leaks everything to everyone.</td>
+        <td>Split vaults by audience; use private repos; move sensitive material to a permission-aware store; serialize writes.</td>
+      </tr>
+      <tr>
+        <td><strong>Prompt injection</strong></td>
+        <td>A raw source contains instructions ("ignore previous instructions," "exfiltrate secrets"). The agent treats them as commands.</td>
+        <td>Schema rule: sources are data. Sandbox the agent; default-deny network; read-only raw; review tool calls.</td>
+      </tr>
+      <tr>
+        <td><strong>Circular lint</strong></td>
+        <td>The same model that wrote the page grades the page. It finds the same plausible story convincing twice.</td>
+        <td>Use a different model or a deterministic checker for the second pass; compare claims to source bytes, not just to other pages.</td>
+      </tr>
+      <tr>
+        <td><strong>Lossy compression</strong></td>
+        <td>A 200-line source becomes a 40-line summary. Hedges, edge cases, and context disappear; the summary reads more confident than the source.</td>
+        <td>Keep source links and quotes; mark confidence; preserve "it depends" conditions; do not promote a summary to stable without reading the source.</td>
+      </tr>
+      <tr>
+        <td><strong>Cost blowup</strong></td>
+        <td>The agent reads five full pages per question, then retries. Ingest touches 15 pages. The bill grows faster than the value.</td>
+        <td>Budget per ingest/query; use scoped pages and section-level retrieval; prompt caching; evaluate cost per successful answer.</td>
+      </tr>
+      <tr>
+        <td><strong>Fabricated citations</strong></td>
+        <td>The model writes a citation that looks right, resolves to a real file, and does not support the claim.</td>
+        <td>Resolve every citation; sample-check quotes and numbers; require page/section coordinates; flag unsupported claims.</td>
+      </tr>
+      <tr>
+        <td><strong>Write-only wiki</strong></td>
+        <td>The system produces pages nobody reads. The compounding loop is broken because the human never returns.</td>
+        <td>Use it for real questions; file answers back; review weekly; kill it if you do not revisit it.</td>
+      </tr>
+    </tbody>
+  </table></div>
+
+  <div class="box note">
+    <span class="tag">The deepest failure is epistemic</span>
+    <p>Lint checks <em>consistency</em>. Truth is a relationship between the wiki and the world. A
+    wiki can be beautifully linked, internally coherent, and wrong. The only defenses are provenance,
+    source re-verification, and a human who is willing to say "I don't know yet."</p>
+  </div>
+
+  <h2 id="mitigations">4 · Production guardrails that hold</h2>
+  <p>If you run this pattern beyond a personal experiment, these are the controls that repeatedly show
+  up in field reports. They are not optional polish; they are the difference between a knowledge
+  asset and a confident liability.</p>
+
+  <div class="table-wrap"><table>
+    <thead><tr><th>Guardrail</th><th>Implementation</th><th>What it prevents</th></tr></thead>
+    <tbody>
+      <tr><td><strong>Raw immutability</strong></td><td>Read-only mount or file permissions; schema rule; git history</td><td>Silent rewriting of evidence; provenance collapse</td></tr>
+      <tr><td><strong>Claim-level provenance</strong></td><td>Footnotes keyed to source IDs; page/section/line pointers; quotes for numbers</td><td>Fabricated citations; unsupported claims</td></tr>
+      <tr><td><strong>Draft vs trusted</strong></td><td><code>status: draft | stable | deprecated</code>; only humans promote to stable</td><td>Unreviewed LLM output becoming evidence</td></tr>
+      <tr><td><strong>Two-layer lint</strong></td><td>Deterministic link/index/source checks in CI; LLM judgment in a session; human adjudication</td><td>Index drift, orphans, circular lint</td></tr>
+      <tr><td><strong>Source freshness</strong></td><td>Hash/mtime checks; <code>stale_after</code> dates; re-verify oldest claims</td><td>Silent supersession and stale facts</td></tr>
+      <tr><td><strong>Scoped corpora</strong></td><td>Sub-wikis by domain, audience, or task; routed indexes</td><td>Relevance pollution; context overload</td></tr>
+      <tr><td><strong>Permission boundaries</strong></td><td>Separate private vaults; no secrets; permission-aware store for sensitive data</td><td>Oversharing; data leakage</td></tr>
+      <tr><td><strong>Agent sandbox</strong></td><td>Read-only raw, write-only wiki, default-deny network, tool allowlist, human approval for shell</td><td>Prompt injection; destructive edits; exfiltration</td></tr>
+      <tr><td><strong>Evaluation set</strong></td><td>20+ real questions with gold answers and sources; compare raw/RAG/wiki</td><td>Unmeasured quality and cost claims</td></tr>
+      <tr><td><strong>Exit plan</strong></td><td>Archive criteria; delete/merge policy; owner and review cadence</td><td>Zombie wiki that nobody trusts or maintains</td></tr>
+    </tbody>
+  </table></div>
+
+  <div class="quote">
+    <p>"Automatic capture is easy. The real system is everything that prevents silent loss, duplicate
+    memory, stale state, misleading confidence, and accidental over-retrieval."</p>
+    <cite>Field report on an LLM Wiki implementation, September 2026</cite>
+  </div>
+
+  <h2 id="when-not">5 · When not to use an LLM Wiki</h2>
+  <p>The strict list. If your situation matches one of these, use a different tool — or use the wiki
+  only as an authoring layer in front of the real system.</p>
+
+  <ol>
+    <li><strong>It is the transactional source of truth.</strong> Orders, inventory, balances, and
+    state transitions belong in a database with constraints and transactions, not in prose.</li>
+    <li><strong>It is a regulated record.</strong> Audit trails, legal hold, retention, and
+    reproducible answers require deterministic storage and access control, not a markdown vault.</li>
+    <li><strong>You need per-page or per-tenant permissions.</strong> Plain markdown has no ACL.
+    Splitting vaults is a blunt instrument; a permission-aware store is the right layer.</li>
+    <li><strong>You need high-QPS retrieval.</strong> A wiki is an authoring and synthesis layer,
+    not a serving layer with an SLA. Use a search service or vector database for production QPS.</li>
+    <li><strong>The corpus is a one-off.</strong> If you will ask one question and never return,
+    RAG, search, or a long-context prompt is simpler and cheaper.</li>
+    <li><strong>No one will review it.</strong> Without a human promotion gate, errors compound and
+    the wiki becomes a confident hallucination with backlinks.</li>
+    <li><strong>No one will revisit it.</strong> A write-only wiki is an expensive content-generation
+    habit. If you do not have recurring questions, do not build the loop.</li>
+    <li><strong>The facts change constantly.</strong> Live prices, inventory, metrics, and policies
+    need automated re-verification, not a page that was true last month.</li>
+    <li><strong>You need deterministic, reproducible answers.</strong> If the same query must return
+    the same answer after a rebuild, use a database or a versioned rules engine.</li>
+    <li><strong>You cannot absorb the ingest cost.</strong> Compiling a source into 10–15 pages is
+    token-heavy. If the budget is tight, a smaller scope or a simpler retrieval pipeline is better.</li>
+    <li><strong>You need multi-agent concurrency on the same pages.</strong> Prose merges are painful;
+    serialize writes or split the corpus before you add agents.</li>
+    <li><strong>The domain is adversarial.</strong> If sources are untrusted and the agent has tools,
+    the prompt-injection surface is large. Harden it like a security boundary, or do not run it.</li>
+  </ol>
+
+  <h2 id="decision">6 · Decision tree</h2>
+  <pre class="tree">Will you revisit this corpus for weeks or months?
+├─ no  → RAG / search / long-context. Do not build a wiki.
+└─ yes
+   ├─ Do you need synthesis across multiple sources?
+   │  ├─ no  → Notes + search. A wiki may still help, but it is not required.
+   │  └─ yes
+   │     ├─ Do you need provenance and human review?
+   │     │  ├─ no  → RAG or agentic retrieval may be enough.
+   │     │  └─ yes → LLM Wiki is a good fit.
+   │     ├─ Do you need per-user permissions or high QPS?
+   │     │  ├─ yes → Database/search service + wiki as authoring layer.
+   │     │  └─ no  → Start with files, index, and grep.
+   │     └─ Will you actually read and lint it?
+   │        ├─ no  → Do not build it. It will drift.
+   │        └─ yes → Start with 5 sources. Add search/graph index at bottlenecks.
+   └─ Is the data transactional, regulated, or live?
+      ├─ yes → Use the system of record; the wiki is only a view.
+      └─ no  → Proceed with the wiki.</pre>
+
+  <h2 id="ecosystem">7 · The ecosystem and OKF</h2>
+  <p>The pattern moved from a gist to a small ecosystem in a few months. The most important
+  development is Google Cloud's <strong>Open Knowledge Format (OKF)</strong>, which formalizes the
+  markdown + YAML-frontmatter shape and adds the trust signals a machine-maintained corpus needs.</p>
+
+  <div class="table-wrap"><table>
+    <thead><tr><th>Piece</th><th>What it adds</th><th>Status / caveat</th></tr></thead>
+    <tbody>
+      <tr><td><strong>OKF v0.2</strong></td><td>Directory of markdown concept files; required <code>type</code>; <code>sources</code>, <code>generated</code>, <code>verified</code>, <code>status</code>, <code>stale_after</code>; <code>index.md</code> / <code>log.md</code> conventions; attested computations.</td><td>Google-led, vendor-neutral spec; v0.1 June 2026, v0.2 July 2026. Young; adoption still early; not a retrieval engine.</td></tr>
+      <tr><td><strong>qmd</strong></td><td>Local BM25 + vector search + LLM reranking; CLI and MCP server.</td><td>Karpathy recommends it for larger wikis. Local models; measure latency on your machine.</td></tr>
+      <tr><td><strong>graphify</strong></td><td>Skill that turns code, docs, papers, and images into a queryable graph; interactive HTML, JSON, report.</td><td>Author claims 71.5× fewer tokens per query; independent 72-run test found it slow and lower quality on a code-migration workload. Verify.</td></tr>
+      <tr><td><strong>ki</strong></td><td>Deterministic Neo4j index over markdown; section-level navigation and backlinks.</td><td>Vendor reference implementation; files stay canonical; index is disposable.</td></tr>
+      <tr><td><strong>llm-wiki-ops</strong></td><td>Node/edge CRUD, wikilink management, graph metrics, MCP server; no LLM at operation time.</td><td>Useful when you want deterministic graph surgery instead of prose edits.</td></tr>
+      <tr><td><strong>Obsidian</strong></td><td>Editor, backlinks, graph view, Dataview, Web Clipper, Marp integration.</td><td>The reference viewer, not a requirement. Graph view is a visualization, not a query engine.</td></tr>
+    </tbody>
+  </table></div>
+
+  <p>OKF's v0.2 is a meaningful shift: it treats <strong>provenance, trust, lifecycle, and
+  attestation</strong> as first-class fields. That is exactly the layer the original gist leaves to
+  the schema. But a format is not a retrieval system, and a trust field is not a truth guarantee. A
+  page can be marked <code>verified</code> and still be wrong. The format makes the claim inspectable;
+  it does not make it correct.</p>
+
+  <div class="box claim">
+    <span class="tag">Standards arrive before benchmarks</span>
+    <p>OKF was published within two months of the gist, before large-scale evidence about long-term
+    wiki quality or cost. That is normal for infrastructure standards, but it means adoption is an
+    act of faith in the shape, not proof that the shape works at scale. Treat the spec as a useful
+    contract and the benchmarks as early, conditional evidence.</p>
+  </div>
+
+  <h2 id="open">8 · Open questions</h2>
+  <ul>
+    <li><strong>Long-term drift.</strong> There is no multi-year study of an LLM-maintained wiki. We
+    know errors compound in principle; we do not know the rate, or which lint designs catch them.</li>
+    <li><strong>Benchmark standardization.</strong> Every study uses a different corpus, question set,
+    judge, and cost boundary. A shared eval would make the claims comparable.</li>
+    <li><strong>Claim-level provenance at scale.</strong> Page-level citations are easy; mapping every
+    number and quote to a source coordinate is expensive. OKF's <code>sources</code> and footnotes
+    are a start, not a solution.</li>
+    <li><strong>Permissions and multi-user use.</strong> Plain markdown has no ACL. Splitting vaults
+    works for small teams; it is not a general answer.</li>
+    <li><strong>Agent interoperability.</strong> OKF and <code>AGENTS.md</code> help, but different
+    agents still have different tool permissions, memory, and failure modes.</li>
+    <li><strong>Graph layer necessity.</strong> The filesystem vs graph index trade-off is argued by
+    vendors and experienced by users, but not rigorously benchmarked for wiki navigation.</li>
+    <li><strong>Human factors.</strong> The pattern assumes a human who reads, reviews, and revisits.
+    Most failures are failures of that assumption, not of the model.</li>
+    <li><strong>Security.</strong> Prompt injection through knowledge sources is an open problem. A
+    wiki agent with shell and network access is a large attack surface.</li>
+  </ul>
+
+  <div class="box verdict">
+    <span class="tag">The honest verdict</span>
+    <p><strong>Use it if</strong> you have a corpus you will revisit, questions that require
+    synthesis, a human review loop, and a tolerance for token cost. <strong>Do not use it if</strong>
+    you need transactions, permissions, deterministic answers, high QPS, or a one-off lookup.
+    <strong>Measure it</strong> on your own questions before you scale it. The pattern is real, the
+    compounding is real, and so is the drift.</p>
+  </div>
+
+  <h2 id="sources">9 · Sources</h2>
+  <ol class="small">
+    <li>Andrej Karpathy, <em>LLM Wiki</em> (idea file), 4 April 2026 — <a href="https://gist.github.com/karpathy/442a6bf555914893e9891c11519de94f">gist.github.com</a>.</li>
+    <li>Google Cloud, <em>Introducing the Open Knowledge Format</em>, 12 June 2026 — <a href="https://cloud.google.com/blog/products/data-analytics/how-the-open-knowledge-format-can-improve-data-sharing">cloud.google.com</a>.</li>
+    <li>Google Cloud, <em>Open Knowledge Format v0.2 adds trust signals</em>, 24 July 2026 — <a href="https://cloud.google.com/blog/products/data-analytics/okf-v0-2-adds-trust-signals">cloud.google.com</a>.</li>
+    <li>Open Knowledge Format v0.2 specification — <a href="https://github.com/GoogleCloudPlatform/open-knowledge-format/blob/main/SPEC.md">github.com/GoogleCloudPlatform/open-knowledge-format</a>.</li>
+    <li><em>Vector RAG vs LLM-Compiled Wiki: A Preregistered Comparison</em>, arXiv 2605.18490, May 2026 — <a href="https://arxiv.org/html/2605.18490v1">arxiv.org</a>.</li>
+    <li>ROBOCO, <em>Does Karpathy's LLM Wiki Actually Work? A 72-Run Benchmark</em>, 7 May 2026 — <a href="https://roboco.io/en/posts/karpathy-llm-wiki-72-run-benchmark/">roboco.io</a>.</li>
+    <li>Nicolas C., <em>Agentic RAG vs wiki: 30-query comparison</em>, April 2026 — <a href="https://www.linkedin.com/posts/nic-cravino_github-sw30labswiki-vs-rag-activity-7451277588808765440-53Vy">LinkedIn</a>.</li>
+    <li>Artificial Ideas, <em>Karpathy's LLM Wiki, and whether it's worth wiring up</em>, 27 May 2026 — <a href="https://artificial-ideas.com/learn/karpathy-llm-wiki/">artificial-ideas.com</a>.</li>
+    <li><em>I read all 1,061 comments on Karpathy's llm-wiki gist</em>, 17 August 2026 — <a href="https://omiid.me/notebook/66/i-read-all-1-061-comments-on-karpathy-s-llm-wiki-gist">omiid.me</a>.</li>
+    <li>Samanta Fluture, <em>Stress-Testing the Karpathy Wiki</em>, 12 April 2026 — <a href="https://samantafluture.com/blog/2026-04-12-stress-testing-the-karpathy-wiki/">samantafluture.com</a>.</li>
+    <li>youcanbuildthings, <em>LLM Wiki Maintenance: One Wrong Summary, 16 Errors</em>, 20 May 2026 — <a href="https://youcanbuildthings.com/articles/llm-wiki-maintenance-lint/">youcanbuildthings.com</a>.</li>
+    <li>mi-code, <em>Karpathy's LLM wiki in a real repo: the pattern, our setup, the gaps</em>, 22 September 2026 — <a href="https://mi-code.pl/en/blog/llm-wiki-karpathy-jak-to-robimy/">mi-code.pl</a>.</li>
+    <li>Neo4j, <em>Scale Karpathy's LLM wiki with a lightweight graph</em>, 31 August 2026 — <a href="https://neo4j.com/blog/agentic-ai/scaling-karpathy-llm-wiki-graph/">neo4j.com</a> (vendor argument).</li>
+    <li>Tobi Lütke, <em>qmd</em> — <a href="https://github.com/tobi/qmd">github.com/tobi/qmd</a>.</li>
+    <li>Safi Shamsi, <em>graphify</em> — <a href="https://github.com/safishamsi/graphify">github.com/safishamsi/graphify</a>.</li>
+    <li>Zach Blumenfeld, <em>knowledge-index (ki)</em> — <a href="https://github.com/zach-blumenfeld/knowledge-index">github.com/zach-blumenfeld/knowledge-index</a>.</li>
+    <li>jinnnyang, <em>llm-wiki-ops</em> — <a href="https://github.com/jinnnyang/llm-wiki-ops">github.com/jinnnyang/llm-wiki-ops</a>.</li>
+    <li>llm-wiki-plugin, graph layer — <a href="https://praneybehl.github.io/llm-wiki-plugin/graph.html">praneybehl.github.io/llm-wiki-plugin</a>.</li>
+  </ol>
+
+  <div class="pager">
+    <a href="04_build.html">← Part 4 — Build it</a>
+    <a class="next" href="graph.html">Interactive graph →</a>
+  </div>
+
+</div>
+</main>
+
+<footer class="site-foot">
+  <div class="wrap">
+    <span>LLM Wiki Investigation — part of the SQL Mastery repository.</span>
+    <span>Written October 2026 · verify versions and claims before acting on specifics.</span>
+  </div>
+</footer>
+
+</body>
+</html>

@@ -1,0 +1,253 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>LLM Wiki Investigation — Karpathy's markdown knowledge graph | SQL Mastery</title>
+<meta name="description" content="An evidence-based investigation of Andrej Karpathy's LLM Wiki pattern: persistent, LLM-maintained markdown knowledge bases, how markdown links become a graph, how to build one, and where the pattern breaks.">
+<link rel="stylesheet" href="assets/report.css">
+</head>
+<body>
+
+<header class="top">
+  <div class="wrap">
+    <a class="brand" href="index.html">
+      <span class="brand-icon">L<i>W</i></span>
+      <span><b>LLM Wiki Investigation</b><small>SQL Mastery · field report</small></span>
+    </a>
+    <nav>
+      <a class="current" href="index.html">Overview</a>
+      <a href="01_idea.html">1 · The idea</a>
+      <a href="02_architecture.html">2 · Architecture</a>
+      <a href="03_graph.html">3 · Markdown as graph</a>
+      <a href="04_build.html">4 · Build it</a>
+      <a href="05_evidence.html">5 · Evidence</a>
+    </nav>
+  </div>
+</header>
+
+<section class="hero">
+  <div class="wrap">
+    <p class="eyebrow">Investigation · October 2026 · LLM Wiki (April 2026) · OKF v0.2</p>
+    <h1>The wiki that<br>maintains itself.</h1>
+    <p>Andrej Karpathy's <strong>LLM Wiki</strong> is not a new database and not a new file format.
+    It is an operating pattern for a personal knowledge base: immutable raw sources, an
+    LLM-maintained collection of interlinked markdown pages, and a written schema that tells the
+    agent how to ingest, answer, and lint. The graph is what you get when ordinary links stop being
+    decoration and become the navigation layer.</p>
+    <p class="meta">5 parts · architecture and templates · interactive graph · benchmarks and failure modes · dated sources</p>
+    <div class="actions">
+      <a class="primary" href="01_idea.html">Start with the idea →</a>
+      <a href="graph.html">Open the graph view</a>
+    </div>
+  </div>
+</section>
+
+<main>
+<div class="wrap">
+
+  <div class="box verdict">
+    <span class="tag">Verdicts up front</span>
+    <ol>
+      <li><strong>The pattern is the technology.</strong> Karpathy's April 2026 idea file describes
+      three layers — <em>raw sources</em>, an LLM-written <em>wiki</em>, and a <em>schema</em> such as
+      <code>AGENTS.md</code> or <code>CLAUDE.md</code> — plus three loops: <strong>ingest</strong>,
+      <strong>query</strong>, and <strong>lint</strong>. There is no runtime to install. The wiki is
+      just a git repository of markdown files.</li>
+      <li><strong>Karpathy popularized the pattern; he did not invent linked markdown.</strong>
+      Wikilinks, Zettelkasten, Obsidian's graph view, and Vannevar Bush's Memex all predate it. What
+      is new is the division of labour: the human curates sources and asks questions, the LLM does
+      the cross-referencing, filing, and bookkeeping that humans abandon.</li>
+      <li><strong>The important shift is compile-once, query-many.</strong> RAG re-derives synthesis
+      from raw chunks on every question. An LLM Wiki compiles the synthesis into pages once, then
+      keeps those pages current. That is why the knowledge compounds — and why errors compound too.</li>
+      <li><strong>"Markdown as a graph" is real, but it is a derived graph.</strong> Files are nodes,
+      links are directed edges, folders are containment, and frontmatter can carry typed
+      relationships. The files remain the source of truth; the graph is an index or a view, not
+      necessarily a second database.</li>
+      <li><strong>Use it for synthesis, not for transactions.</strong> This is a personal or
+      small-team knowledge tool: research, reading, due diligence, course notes, internal wikis. It
+      is a poor fit for regulated records, high-QPS retrieval, multi-tenant permissions, or any
+      corpus you will not actually revisit.</li>
+    </ol>
+  </div>
+
+  <div class="kpis">
+    <div class="kpi"><small>Idea file published</small><b>Apr 2026</b><span>Karpathy's <code>llm-wiki.md</code> gist, designed to be pasted into an agent.</span></div>
+    <div class="kpi"><small>Architecture</small><b>3 layers</b><span>Raw sources, LLM-owned wiki, and a schema that governs the loop.</span></div>
+    <div class="kpi"><small>Operations</small><b>3 loops</b><span>Ingest a source, query the wiki, lint it for drift and gaps.</span></div>
+    <div class="kpi"><small>Index scale</small><b>~100 sources</b><span>Karpathy's estimate for when <code>index.md</code> alone still works.</span></div>
+    <div class="kpi"><small>Cost warning</small><b>21×</b><span>Query-token premium in one preregistered wiki-vs-RAG test — not a universal constant.</span></div>
+  </div>
+
+  <div class="toc">
+    <p>How to read this investigation</p>
+    <div class="cards">
+      <a class="card" href="01_idea.html">
+        <small>Part 1</small><b>The idea</b>
+        <span>Why RAG forgets, what compile-once means, the human/agent division of labour, the Memex and Zettelkasten lineage, and what is genuinely new.</span>
+      </a>
+      <a class="card" href="02_architecture.html">
+        <small>Part 2</small><b>Architecture &amp; operations</b>
+        <span>The three layers, the schema contract, page types, <code>index.md</code> and <code>log.md</code>, ingest/query/lint workflows, a worked example, and the security model.</span>
+      </a>
+      <a class="card" href="03_graph.html">
+        <small>Part 3</small><b>Markdown as a graph</b>
+        <span>Wikilinks, backlinks, typed frontmatter, graph views, graph indexes such as <code>ki</code>, and the honest boundary between a folder and a graph database.</span>
+      </a>
+      <a class="card" href="04_build.html">
+        <small>Part 4</small><b>Build your own</b>
+        <span>An eight-step setup, copyable <code>AGENTS.md</code> / <code>index.md</code> / <code>log.md</code> templates, ingest and lint prompts, tooling, and a 30-day plan.</span>
+      </a>
+      <a class="card" href="05_evidence.html">
+        <small>Part 5</small><b>Evidence &amp; limits</b>
+        <span>What the benchmarks actually show, the failure modes that kill wikis, provenance and permission problems, and the strict list of when not to use this.</span>
+      </a>
+      <a class="card" href="graph.html">
+        <small>Interactive</small><b>Graph view</b>
+        <span>A working map of this report: pages, concepts, tools, and risks as nodes. Drag, search, filter, and follow the edges.</span>
+      </a>
+    </div>
+  </div>
+
+  <h2 id="what">What the thing actually is</h2>
+  <p>Karpathy's gist is deliberately short and deliberately abstract. It describes a
+  <strong>persistent wiki that sits between you and your raw documents</strong>. When a new source
+  arrives, the agent does not merely index it for later retrieval. It reads the source, extracts the
+  claims, updates entity and concept pages, adds cross-references, notes contradictions with older
+  material, updates the index, and appends to a log. A single source might touch ten or fifteen
+  pages.</p>
+  <p>At question time you ask the wiki, not the raw pile. The agent reads the index, opens the
+  relevant pages, and synthesizes an answer with citations. If the answer is good, it can be filed
+  back as a new page. The next question starts from a richer artifact than the last one. That is the
+  compounding loop.</p>
+
+  <div class="quote">
+    <p>"Obsidian is the IDE; the LLM is the programmer; the wiki is the codebase."</p>
+    <cite>Andrej Karpathy, <em>LLM Wiki</em> idea file, 4 April 2026</cite>
+  </div>
+
+  <p>That metaphor is the clearest way to understand the stack. Markdown files are source code.
+  Links are imports. The index is the table of contents. Git is the history. The agent is the
+  maintainer who will actually keep the imports from rotting. Obsidian is one possible viewer, not a
+  requirement.</p>
+
+  <h2 id="matrix">Decision matrix — the whole investigation in one table</h2>
+  <div class="table-wrap"><table>
+    <thead><tr><th>Your situation</th><th>Correct tool</th><th>Why</th></tr></thead>
+    <tbody>
+      <tr><td>Personal research over weeks or months; 10–500 sources; you want synthesis, not just search</td>
+        <td><strong>LLM Wiki + Obsidian + git</strong></td>
+        <td>Compiled pages carry cross-references and contradictions forward. The human curates; the agent does the bookkeeping.</td></tr>
+      <tr><td>Reading a book or taking a course; each chapter adds characters, themes, or concepts</td>
+        <td><strong>LLM Wiki, ingest one chapter at a time</strong></td>
+        <td>Entity pages and concept pages accumulate. By the end you have a companion wiki, not a pile of summaries.</td></tr>
+      <tr><td>Team internal wiki fed by Slack threads, meeting transcripts, and project docs</td>
+        <td><strong>LLM Wiki + review gate + scoped corpora</strong></td>
+        <td>The agent can draft freely, but promotion to trusted status needs a human. Split by audience before permissions become a problem.</td></tr>
+      <tr><td>One-off Q&amp;A over thousands of PDFs or web pages</td>
+        <td><strong>Hybrid RAG (BM25 + vectors + reranking)</strong></td>
+        <td>You do not need a persistent synthesis layer if you will not revisit the corpus. Chunk-and-retrieve is cheaper to stand up.</td></tr>
+      <tr><td>Exact lookup, audit trail, or regulated record</td>
+        <td><strong>The source of truth plus deterministic queries</strong></td>
+        <td>The wiki is a navigation and synthesis layer. It must cite the raw source; it must not become the authority for a number.</td></tr>
+      <tr><td>Questions are mostly "what links to this, what is the shortest path, what is central?"</td>
+        <td><strong>Graph index over the markdown (e.g. <code>ki</code>) or a graph database</strong></td>
+        <td>Backlinks and multi-hop traversal are cheap when the graph is indexed. The files stay canonical; the index is disposable.</td></tr>
+      <tr><td>Wiki has grown past a few hundred pages or many agents query it concurrently</td>
+        <td><strong>Local search (qmd) or a graph index; scope the corpus</strong></td>
+        <td><code>index.md</code> plus grep becomes linear work. Section-level retrieval and backlink indexes cut the context you load.</td></tr>
+      <tr><td>High-QPS serving, transactional consistency, per-tenant permissions</td>
+        <td><strong>A database or search service, not this pattern</strong></td>
+        <td>Plain markdown has no access control, no transactions, and no serving SLA. Use the right layer for the product.</td></tr>
+    </tbody>
+  </table></div>
+
+  <h2 id="myths">Myth check</h2>
+  <div class="box note">
+    <span class="tag">What this is — and is not</span>
+    <div class="myth"><b>Myth</b><span>"Karpathy invented a way to store markdown as a graph."<br><strong>Reality:</strong> he popularized a pattern for an LLM-maintained wiki whose links form a graph. Linked notes, wikis, Zettelkasten, and graph views existed long before 2026. His contribution is the maintenance loop and the human/agent split.</span></div>
+    <div class="myth"><b>Myth</b><span>"It is a graph database."<br><strong>Reality:</strong> the canonical store is a folder of files. The graph is a projection: links, folders, headings, and optional frontmatter. A graph database can index that projection, but it is not required.</span></div>
+    <div class="myth"><b>Myth</b><span>"It replaces RAG."<br><strong>Reality:</strong> it changes <em>when</em> synthesis happens. RAG retrieves and synthesizes per query; the wiki compiles synthesis ahead of time. Agentic RAG can close much of the quality gap in some tests.</span></div>
+    <div class="myth"><b>Myth</b><span>"It is cheaper than RAG."<br><strong>Reality:</strong> not automatically. Ingest burns tokens, and a wiki query may read several full pages. One preregistered study measured a ~21× query-token premium; another benchmark measured savings versus reading raw files. Measure your workload.</span></div>
+    <div class="myth"><b>Myth</b><span>"It is just Obsidian."<br><strong>Reality:</strong> Obsidian is a viewer and graph browser. The pattern is the raw/wiki/schema structure plus ingest, query, and lint. You can run it in VS Code, a terminal, or any editor.</span></div>
+    <div class="myth"><b>Myth</b><span>"The LLM writes everything, so you can forget about it."<br><strong>Reality:</strong> the LLM writes the pages, but humans curate sources, review promotions, and decide what matters. Unreviewed output is a draft, not evidence.</span></div>
+  </div>
+
+  <h2 id="numbers">Key numbers this report relies on</h2>
+  <div class="table-wrap"><table>
+    <thead><tr><th>Fact</th><th>Value (as of Oct 2026)</th><th>Source</th></tr></thead>
+    <tbody>
+      <tr><td>Karpathy's idea file</td><td><code>llm-wiki.md</code>, published 4 April 2026; describes itself as an "idea file" to copy into an agent</td><td>Karpathy gist</td></tr>
+      <tr><td>Scale where the index still works</td><td>~100 sources, hundreds of pages; <code>index.md</code> is enough at this size</td><td>Karpathy gist</td></tr>
+      <tr><td>Google Cloud Open Knowledge Format</td><td>v0.1 announced 12 June 2026; v0.2 shipped 24 July 2026 with provenance, trust, lifecycle, and attested computations</td><td>Google Cloud blog + OKF spec</td></tr>
+      <tr><td>Wiki vs single-round RAG</td><td>Wiki much better at cross-paper synthesis and claim-level citation (40.2% vs 18.9% cited claims supported); ~21× more query tokens; no architecture best on all axes</td><td>arXiv 2605.18490 (preprint, 24 papers, 13 questions)</td></tr>
+      <tr><td>Wiki vs reading raw files</td><td>54% fewer tokens and 39% less time on an 8-task, 72-run migration benchmark; quality equal; wiki won 5 of 8 tasks, vanilla won single-source lookups</td><td>ROBOCO benchmark (blog, not peer-reviewed)</td></tr>
+      <tr><td>Agentic RAG vs wiki</td><td>7,730 vs 18,373 tokens per query; quality 4.73 vs 4.69 on a 30-query test; agentic RAG won the head-to-head 8–4–18</td><td>Independent 30-query comparison (author-published)</td></tr>
+      <tr><td>Search layer Karpathy recommends</td><td><code>qmd</code>: local hybrid BM25/vector search with LLM reranking; CLI + MCP server</td><td>Karpathy gist; tobi/qmd</td></tr>
+      <tr><td>Graph index example</td><td><code>ki</code>: deterministic Neo4j index over markdown; Vault → Folder → Document → Section; <code>HAS</code>, <code>NEXT_SECTION</code>, <code>LINKS_TO</code></td><td>Neo4j engineering blog (vendor)</td></tr>
+    </tbody>
+  </table></div>
+
+  <div class="box claim">
+    <span class="tag">How to read the evidence</span>
+    <p>Karpathy's essay is a <em>design argument</em>, not a benchmark. The independent tests that
+    followed are small, heterogeneous, and often author-published. They agree on the shape of the
+    trade-off — the wiki helps most when a question requires synthesizing several sources, and helps
+    least when the answer sits in one document — but they disagree on token cost. Treat every number
+    as conditional on corpus, model, prompt, and how much of the wiki the agent reads. Part 5 lays
+    out the benchmarks and their caveats in detail.</p>
+  </div>
+
+  <h2 id="scope">Scope and method</h2>
+  <p>This is an engineering investigation, not a product review or a tutorial in prompt magic.
+  Research window: October 2026. Primary sources checked directly: Karpathy's <code>llm-wiki.md</code>
+  gist; Google Cloud's OKF announcement, v0.2 post, and specification; the <code>qmd</code>,
+  <code>graphify</code>, <code>ki</code>, and <code>llm-wiki-ops</code> repositories; and the
+  preregistered wiki-vs-RAG study. Secondary sources include independent benchmarks, field reports,
+  and critiques; they are labeled where they matter.</p>
+  <p>The report is also an answer to a common misreading. Karpathy did not invent a graph file
+  format, and the pattern is not "put your notes in a graph database." It is a way to make an
+  agent maintain a body of prose that happens to be navigable as a graph. The distinction matters:
+  it tells you what to optimize (maintenance and provenance) and what not to buy (a graph engine you
+  do not need).</p>
+  <p>The sibling reports in this repository —
+  <a href="../vector_databases/index.html">vector databases</a> and
+  <a href="../graph_databases/index.html">graph databases</a> — cover the retrieval and graph-engine
+  layers in depth. This one sits one level up: how to build a durable knowledge artifact with an
+  agent, and when that artifact is the right tool at all.</p>
+
+  <h2 id="sources">Sources</h2>
+  <ol class="small">
+    <li>Andrej Karpathy, <em>LLM Wiki</em> (idea file), GitHub Gist, 4 April 2026 — <a href="https://gist.github.com/karpathy/442a6bf555914893e9891c11519de94f">gist.github.com/karpathy/442a6bf555914893e9891c11519de94f</a> (accessed 2026-10-20).</li>
+    <li>Google Cloud, <em>Introducing the Open Knowledge Format</em>, 12 June 2026 — <a href="https://cloud.google.com/blog/products/data-analytics/how-the-open-knowledge-format-can-improve-data-sharing">cloud.google.com</a>.</li>
+    <li>Google Cloud, <em>Open Knowledge Format v0.2 adds trust signals</em>, 24 July 2026 — <a href="https://cloud.google.com/blog/products/data-analytics/okf-v0-2-adds-trust-signals">cloud.google.com</a>.</li>
+    <li>Open Knowledge Format v0.2 specification — <a href="https://github.com/GoogleCloudPlatform/open-knowledge-format/blob/main/SPEC.md">github.com/GoogleCloudPlatform/open-knowledge-format</a>.</li>
+    <li>Neo4j, <em>Scale Karpathy's LLM wiki with a lightweight graph</em>, 31 August 2026 — <a href="https://neo4j.com/blog/agentic-ai/scaling-karpathy-llm-wiki-graph/">neo4j.com</a> (vendor argument; not an independent benchmark).</li>
+    <li><em>Vector RAG vs LLM-Compiled Wiki: A Preregistered Comparison</em>, arXiv 2605.18490, May 2026 — <a href="https://arxiv.org/html/2605.18490v1">arxiv.org</a> (preprint).</li>
+    <li>ROBOCO, <em>Does Karpathy's LLM Wiki Actually Work? A 72-Run Benchmark</em>, 7 May 2026 — <a href="https://roboco.io/en/posts/karpathy-llm-wiki-72-run-benchmark/">roboco.io</a>.</li>
+    <li>Artificial Ideas, <em>Karpathy's LLM Wiki, and whether it's worth wiring up</em>, 27 May 2026 — <a href="https://artificial-ideas.com/learn/karpathy-llm-wiki/">artificial-ideas.com</a>.</li>
+    <li><em>I read all 1,061 comments on Karpathy's llm-wiki gist</em>, 17 August 2026 — <a href="https://omiid.me/notebook/66/i-read-all-1-061-comments-on-karpathy-s-llm-wiki-gist">omiid.me</a> (field-report synthesis).</li>
+    <li>Tobi Lütke, <em>qmd — Query Markup Documents</em> — <a href="https://github.com/tobi/qmd">github.com/tobi/qmd</a>.</li>
+    <li>Safi Shamsi, <em>graphify</em> — <a href="https://github.com/safishamsi/graphify">github.com/safishamsi/graphify</a> (author claims 71.5× fewer tokens per query vs raw context).</li>
+    <li>Zach Blumenfeld, <em>knowledge-index (ki)</em> — <a href="https://github.com/zach-blumenfeld/knowledge-index">github.com/zach-blumenfeld/knowledge-index</a>.</li>
+    <li>jinnnyang, <em>llm-wiki-ops</em> — <a href="https://github.com/jinnnyang/llm-wiki-ops">github.com/jinnnyang/llm-wiki-ops</a>.</li>
+  </ol>
+
+  <div class="pager">
+    <span></span>
+    <a class="next" href="01_idea.html">Part 1 — The idea →</a>
+  </div>
+
+</div>
+</main>
+
+<footer class="site-foot">
+  <div class="wrap">
+    <span>LLM Wiki Investigation — part of the SQL Mastery repository.</span>
+    <span>Written October 2026 · verify versions and claims before acting on specifics.</span>
+  </div>
+</footer>
+
+</body>
+</html>

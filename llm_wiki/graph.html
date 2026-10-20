@@ -1,0 +1,139 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Interactive graph — the LLM Wiki report as a map | LLM Wiki Investigation</title>
+<meta name="description" content="An interactive graph of the LLM Wiki investigation: pages, concepts, tools, and risks as nodes. Drag, search, filter, and follow the edges.">
+<link rel="stylesheet" href="assets/report.css">
+</head>
+<body>
+
+<header class="top">
+  <div class="wrap">
+    <a class="brand" href="index.html">
+      <span class="brand-icon">L<i>W</i></span>
+      <span><b>LLM Wiki Investigation</b><small>SQL Mastery · field report</small></span>
+    </a>
+    <nav>
+      <a href="index.html">Overview</a>
+      <a href="01_idea.html">1 · The idea</a>
+      <a href="02_architecture.html">2 · Architecture</a>
+      <a href="03_graph.html">3 · Markdown as graph</a>
+      <a class="current" href="graph.html">Graph view</a>
+      <a href="04_build.html">4 · Build it</a>
+      <a href="05_evidence.html">5 · Evidence</a>
+    </nav>
+  </div>
+</header>
+
+<section class="hero">
+  <div class="wrap">
+    <p class="eyebrow">Interactive · 38 nodes · 75 edges</p>
+    <h1>The report,<br>as a graph.</h1>
+    <p>Pages, concepts, tools, and risks are nodes. The edges are the relationships the report argues
+    for. Click a node to read its summary and jump to the section; drag to rearrange; search or filter
+    to isolate a cluster. This is a hand-built demo, not a generated wiki — but it is the same idea.</p>
+    <div class="actions">
+      <a class="primary" href="#graph">Open the map ↓</a>
+      <a href="03_graph.html">Read about markdown as a graph</a>
+    </div>
+  </div>
+</section>
+
+<main class="graph-main">
+<div class="wrap">
+
+  <div class="graph-intro" id="graph">
+    <div>
+      <p class="eyebrow">Graph view</p>
+      <h2 style="margin:6px 0 8px;border:0;padding:0">Explore the report</h2>
+      <p>Larger nodes have more connections. Violet = report pages, mint = concepts, amber = tools,
+      coral = risks. Hover for a label, click for details, double-click to open the page.</p>
+    </div>
+    <div class="chip-set" role="group" aria-label="Filter nodes by type">
+      <button class="chip" data-filter="all" aria-pressed="true"><span class="dot" style="background:var(--muted)"></span>All</button>
+      <button class="chip" data-filter="page" aria-pressed="false"><span class="dot" style="background:var(--accent)"></span>Pages</button>
+      <button class="chip" data-filter="concept" aria-pressed="false"><span class="dot" style="background:var(--mint)"></span>Concepts</button>
+      <button class="chip" data-filter="tool" aria-pressed="false"><span class="dot" style="background:var(--amber)"></span>Tools</button>
+      <button class="chip" data-filter="risk" aria-pressed="false"><span class="dot" style="background:var(--coral)"></span>Risks</button>
+    </div>
+  </div>
+
+  <div class="graph-toolbar">
+    <label class="sr-only" for="graph-search">Search nodes</label>
+    <input id="graph-search" type="search" placeholder="Search nodes…" autocomplete="off">
+    <button id="graph-reset" type="button">Reset layout</button>
+    <button id="graph-pause" type="button" aria-pressed="false">Pause</button>
+    <span class="small" id="graph-count">38 of 38 nodes · 75 edges</span>
+  </div>
+
+  <div class="graph-shell">
+    <div class="graph-stage" id="graph-stage">
+      <canvas id="wiki-graph" aria-label="Interactive graph of the report's pages, concepts, tools, and risks. Use the node list below for keyboard-accessible links."></canvas>
+      <div class="graph-tooltip" id="graph-tooltip" hidden></div>
+      <div class="graph-hint">drag · hover · click · double-click to open</div>
+    </div>
+
+    <aside class="graph-panel" id="graph-panel" aria-live="polite">
+      <div id="graph-info">
+        <p class="eyebrow">Selected node</p>
+        <h3>Nothing selected</h3>
+        <p class="empty">Click any node to see what it is and where to read more. The legend below
+        maps color to type.</p>
+      </div>
+      <div class="legend">
+        <span><i style="background:var(--accent)"></i>Report page</span>
+        <span><i style="background:var(--mint)"></i>Concept</span>
+        <span><i style="background:var(--amber)"></i>Tool / ecosystem</span>
+        <span><i style="background:var(--coral)"></i>Failure mode / risk</span>
+      </div>
+    </aside>
+  </div>
+
+  <div class="box note" style="margin-top:22px">
+    <span class="tag">What this demo is — and is not</span>
+    <p>The graph is a hand-authored visualization of this report's argument. It does not parse
+    markdown, run a graph database, or query an index. For the real pattern, point <code>ki</code>
+    at a folder of markdown, or use Obsidian's graph view as a human map. The point here is the
+    shape: a small graph you can actually read, with pages as entry points and evidence as leaves.</p>
+  </div>
+
+  <div class="graph-node-list">
+    <h2>All nodes</h2>
+    <ul id="node-list">
+      <li><a href="index.html">Overview</a></li>
+      <li><a href="01_idea.html">The idea</a></li>
+      <li><a href="02_architecture.html">Architecture</a></li>
+      <li><a href="03_graph.html">Markdown as a graph</a></li>
+      <li><a href="04_build.html">Build it</a></li>
+      <li><a href="05_evidence.html">Evidence &amp; limits</a></li>
+    </ul>
+  </div>
+
+  <noscript>
+    <div class="box warn">
+      <span class="tag">JavaScript is off</span>
+      <p>The interactive canvas needs JavaScript. You can still read the full report through the
+      node list above and the five parts linked in the navigation.</p>
+    </div>
+  </noscript>
+
+  <div class="pager">
+    <a href="05_evidence.html">← Part 5 — Evidence</a>
+    <a class="next" href="index.html">Back to overview →</a>
+  </div>
+
+</div>
+</main>
+
+<footer class="site-foot">
+  <div class="wrap">
+    <span>LLM Wiki Investigation — part of the SQL Mastery repository.</span>
+    <span>Written October 2026 · graph is illustrative, not a benchmark.</span>
+  </div>
+</footer>
+
+<script src="assets/graph.js"></script>
+</body>
+</html>

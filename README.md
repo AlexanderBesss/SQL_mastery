@@ -20,6 +20,16 @@ SQL/PGQ, as of October 2026) — foundations, a full AGE engineering manual, the
 and a strict guide to when *not* to use a dedicated graph database.
 Open `graph_databases/index.html` in a browser.
 
+## LLM Wiki investigation
+
+A third standalone research section lives in [`llm_wiki/`](llm_wiki/README.md): a five-part
+HTML investigation of Andrej Karpathy's **LLM Wiki** pattern — why a persistent, LLM-maintained
+markdown wiki can beat per-query RAG at synthesis, the raw/wiki/schema architecture and its
+ingest/query/lint loops, how ordinary links and frontmatter become a graph without a graph
+database, a build guide with copyable templates and prompts, and the benchmark evidence,
+failure modes, and hard limits. Includes an interactive graph view.
+Open `llm_wiki/index.html` in a browser.
+
 ## Learning experience
 
 - 35 complete lessons generated from the repository's existing technical notes

@@ -1,0 +1,371 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Part 1 — The idea: from RAG to a compiled wiki | LLM Wiki Investigation</title>
+<meta name="description" content="Why Karpathy's LLM Wiki is different from RAG: compile-once knowledge, persistent synthesis, compounding artifacts, and the human/agent division of labour.">
+<link rel="stylesheet" href="assets/report.css">
+</head>
+<body>
+
+<header class="top">
+  <div class="wrap">
+    <a class="brand" href="index.html">
+      <span class="brand-icon">L<i>W</i></span>
+      <span><b>LLM Wiki Investigation</b><small>SQL Mastery · field report</small></span>
+    </a>
+    <nav>
+      <a href="index.html">Overview</a>
+      <a class="current" href="01_idea.html">1 · The idea</a>
+      <a href="02_architecture.html">2 · Architecture</a>
+      <a href="03_graph.html">3 · Markdown as graph</a>
+      <a href="04_build.html">4 · Build it</a>
+      <a href="05_evidence.html">5 · Evidence</a>
+    </nav>
+  </div>
+</header>
+
+<section class="hero">
+  <div class="wrap">
+    <p class="eyebrow">Part 1 of 5 · The idea</p>
+    <h1>Stop retrieving.<br>Start compiling.</h1>
+    <p>The interesting thing about Karpathy's LLM Wiki is not that it stores notes in markdown. It is
+    that it moves the expensive part of knowledge work — synthesis, cross-referencing, noticing
+    contradictions — from query time to ingest time. The wiki is a compiled artifact that gets
+    better as you use it.</p>
+  </div>
+</section>
+
+<main>
+<div class="wrap">
+
+  <div class="toc">
+    <p>Contents</p>
+    <ol>
+      <li><a href="#rag">The RAG baseline: capable, but amnesiac</a></li>
+      <li><a href="#compiled">The alternative: a persistent, compiled wiki</a></li>
+      <li><a href="#compounding">What "compounding" actually means</a></li>
+      <li><a href="#maintenance">Why maintenance is the real bottleneck</a></li>
+      <li><a href="#prior-art">What is new — and what is not</a></li>
+      <li><a href="#applications">Where the pattern fits</a></li>
+      <li><a href="#experience">What it feels like in practice</a></li>
+      <li><a href="#comparison">Comparison: RAG, wiki, long context, graph</a></li>
+      <li><a href="#glossary">Working glossary</a></li>
+    </ol>
+  </div>
+
+  <h2 id="rag">1 · The RAG baseline: capable, but amnesiac</h2>
+  <p>Retrieval-augmented generation is the default way to give a model access to documents. You
+  chunk the documents, embed the chunks, put the vectors in an index, retrieve the top <em>k</em>
+  chunks for a question, and ask the model to answer from them. It is a good architecture for
+  point-source lookup. Ask "what is the refund window in the 2024 policy?" and RAG is exactly the
+  right shape: find the clause, quote it, done.</p>
+  <p>The limitation appears when the question requires synthesis across several documents. The
+  retriever may miss one of the relevant chunks. Even when it finds them all, the model has to
+  rediscover the same relationships, reconcile the same contradictions, and rebuild the same
+  comparison on every query. Then the context window closes and the synthesis is gone. The next
+  question starts from zero.</p>
+
+  <div class="flow" aria-label="RAG query loop">
+    <div class="flow-step"><small>Every query</small><b>Chunk + embed</b><span>Documents are split and indexed ahead of time.</span></div>
+    <div class="flow-step"><small>Every query</small><b>Retrieve top-k</b><span>Similarity search returns fragments, not a model of the domain.</span></div>
+    <div class="flow-step"><small>Every query</small><b>Synthesize</b><span>The model reconciles the fragments and writes an answer.</span></div>
+    <div class="flow-step"><small>Every query</small><b>Answer</b><span>Citations point at chunks; the synthesis exists only in the response.</span></div>
+    <div class="flow-step"><small>Every query</small><b>Discard</b><span>Nothing accumulates. The next question repeats the work.</span></div>
+  </div>
+
+  <p>Karpathy's framing is blunt: with RAG, "the LLM is rediscovering knowledge from scratch on
+  every question. There's no accumulation." That is not a bug in a retrieval pipeline; it is what a
+  stateless pipeline does. RAG optimizes for finding evidence, not for maintaining a point of view.</p>
+
+  <div class="box note">
+    <span class="tag">The RAG counter-argument</span>
+    <p>RAG is not obsolete. It is cheaper to build, easier to update when documents change, and
+    better when the corpus is huge, unstructured, or queried once. The LLM Wiki is a different
+    product: a durable synthesis layer for a corpus you will revisit. Part 5 shows that agentic RAG
+    can match the wiki on some question sets at lower token cost — which is exactly why the choice
+    should follow the workload, not the hype cycle.</p>
+  </div>
+
+  <h2 id="compiled">2 · The alternative: a persistent, compiled wiki</h2>
+  <p>The LLM Wiki inserts a layer between you and the raw sources. The raw collection stays
+  immutable. The wiki is a directory of markdown pages that the agent owns and maintains. The schema
+  is a document that tells the agent how the wiki is structured and how to behave. When a new source
+  arrives, the agent <strong>compiles</strong> it into the existing wiki rather than merely indexing it.</p>
+
+  <div class="flow" aria-label="LLM Wiki loop">
+    <div class="flow-step"><small>New source</small><b>Ingest</b><span>The agent reads the raw source and discusses the key takeaways with you.</span></div>
+    <div class="flow-step"><small>Compile</small><b>Update pages</b><span>Source summary, entity pages, concept pages, comparisons, index, log.</span></div>
+    <div class="flow-step"><small>Ask</small><b>Query the wiki</b><span>The agent reads the index, follows links, and answers with citations.</span></div>
+    <div class="flow-step"><small>File back</small><b>Keep the answer</b><span>A good comparison or synthesis becomes a new wiki page.</span></div>
+    <div class="flow-step"><small>Periodically</small><b>Lint</b><span>Find contradictions, stale claims, orphans, broken links, and gaps.</span></div>
+  </div>
+
+  <p>This is the core inversion: <strong>the expensive synthesis happens once, at ingest, and is
+  maintained</strong> rather than re-derived on every query. The cross-references are already in the
+  pages. The contradictions have already been flagged. The comparison already exists. A query can
+  start from a page that represents the current state of your understanding, not from a pile of
+  chunks that may or may not contain it.</p>
+
+  <div class="quote">
+    <p>"The wiki is a persistent, compounding artifact. The cross-references are already there.
+    The contradictions have already been flagged. The synthesis already reflects everything you've
+    read."</p>
+    <cite>Andrej Karpathy, <em>LLM Wiki</em>, 4 April 2026</cite>
+  </div>
+
+  <h3>The three layers</h3>
+  <div class="split">
+    <div class="box rule">
+      <span class="tag">Raw sources</span>
+      <p>Articles, papers, images, transcripts, datasets. Curated by you, read by the agent, never
+      modified by it. This is the source of truth and the audit trail.</p>
+    </div>
+    <div class="box rule">
+      <span class="tag">The wiki</span>
+      <p>Summaries, entity pages, concept pages, comparisons, an overview, syntheses. The agent owns
+      this layer entirely: it creates, updates, links, and reconciles.</p>
+    </div>
+  </div>
+  <div class="box rule">
+    <span class="tag">The schema</span>
+    <p>Usually <code>AGENTS.md</code> or <code>CLAUDE.md</code>. It defines the directory layout,
+    page types, frontmatter, naming, link conventions, ingest/query/lint workflows, citation rules,
+    and the boundaries the agent must not cross. This is the file that turns a generic chatbot into
+    a disciplined maintainer.</p>
+  </div>
+
+  <p>Karpathy calls the schema "the key configuration file" and says you and the LLM co-evolve it.
+  That is an important detail: the schema is not a static prompt. It accumulates rules as you learn
+  what goes wrong. A good schema is scar tissue from real mistakes — a missing citation, a stale
+  index, an agent that edited a raw source, a summary that inflated a number.</p>
+
+  <h3>What gets compiled</h3>
+  <p>A single source might touch ten to fifteen pages. For a research paper, the agent might create
+  or update:</p>
+  <ul>
+    <li>a <strong>source summary</strong> page with the citation, date, and key claims;</li>
+    <li>an <strong>entity page</strong> for each person, organization, or system the paper is about;</li>
+    <li>a <strong>concept page</strong> for each method or idea it advances;</li>
+    <li>a <strong>comparison page</strong> if the paper contradicts or extends an existing approach;</li>
+    <li>the <strong>overview</strong> or thesis page if the new evidence changes the big picture;</li>
+    <li>the <strong>index</strong> and the <strong>log</strong>.</li>
+  </ul>
+  <p>This is more work than writing a summary. It is also the work that makes the wiki useful six
+  months later. The summary is a leaf; the cross-references are the structure that lets you navigate
+  from a question to the evidence without re-reading the corpus.</p>
+
+  <h2 id="compounding">3 · What "compounding" actually means</h2>
+  <p>Compounding is not "the model remembers the chat." The chat is still ephemeral. What persists
+  is the <strong>artifact</strong>: pages, links, citations, and the current synthesis. Each new
+  source can strengthen, weaken, or complicate that synthesis. Each good answer can become a new
+  page, so the act of asking a question also improves the knowledge base.</p>
+
+  <div class="split">
+    <div class="box rule">
+      <span class="tag">Positive loop</span>
+      <ol>
+        <li>You add a paper.</li>
+        <li>The agent updates the concept page and flags a contradiction.</li>
+        <li>You ask a comparison question.</li>
+        <li>The answer resolves the contradiction and is filed back.</li>
+        <li>The next question starts from the resolved comparison.</li>
+      </ol>
+    </div>
+    <div class="box warn">
+      <span class="tag">Negative loop</span>
+      <ol>
+        <li>The agent writes a plausible but wrong summary.</li>
+        <li>Four pages cite the summary.</li>
+        <li>A later page cites those four pages as evidence.</li>
+        <li>The wiki is internally consistent and externally wrong.</li>
+        <li>Lint, which reads the wiki, sees no contradiction.</li>
+      </ol>
+    </div>
+  </div>
+
+  <p>Both loops are real. The pattern's advocates talk about the first; its critics talk about the
+  second. The difference is not the LLM's intelligence. It is whether the system has
+  <strong>provenance</strong> (links back to the raw source), <strong>review gates</strong> (a human
+  promotes drafts to trusted), and <strong>deterministic checks</strong> (the source exists, the
+  link resolves, the number matches). Those are engineering decisions, not prompt wording. Part 5
+  covers them in detail.</p>
+
+  <div class="box claim">
+    <span class="tag">Compounding is a property, not a guarantee</span>
+    <p>A wiki can compound knowledge or compound errors. It depends on whether every claim can be
+    traced to a source, whether a human ever reads the output, and whether the lint pass compares
+    claims against the raw bytes rather than only against other wiki pages. "The wiki is internally
+    consistent" is not the same as "the wiki is true."</p>
+  </div>
+
+  <h2 id="maintenance">4 · Why maintenance is the real bottleneck</h2>
+  <p>The standard failure mode of a personal wiki is not capture. It is maintenance. Updating
+  cross-references, keeping summaries current, noticing that a new source contradicts an old claim,
+  and maintaining consistency across dozens of pages is tedious, unbounded work. Humans start with
+  enthusiasm and abandon the wiki when the maintenance burden grows faster than the value.</p>
+  <p>Karpathy's argument is that this is precisely the work an LLM is good at. It does not get
+  bored, it does not forget to update a cross-reference, and it can touch fifteen files in one pass.
+  The cost of maintenance approaches zero in human attention, even though it is not zero in tokens.
+  The wiki stays alive because the thing that killed it — bookkeeping — is automated.</p>
+
+  <div class="table-wrap"><table>
+    <thead><tr><th>Job</th><th>Human</th><th>Agent</th></tr></thead>
+    <tbody>
+      <tr><td>Choose what to read</td><td><strong>Owns it.</strong> Curation is the input to the whole system.</td><td>Can suggest sources and gaps, but should not silently expand scope.</td></tr>
+      <tr><td>Decide what matters</td><td><strong>Owns it.</strong> Priorities, thesis, questions, taste.</td><td>Can surface patterns and contradictions; cannot decide your values.</td></tr>
+      <tr><td>Read and summarize</td><td>Reviews and corrects.</td><td><strong>Does the first pass</strong>, extracts claims, writes pages.</td></tr>
+      <tr><td>Cross-reference</td><td>Spot-checks.</td><td><strong>Owns the bookkeeping</strong>: links, backlinks, index, log.</td></tr>
+      <tr><td>Notice contradictions</td><td>Adjudicates.</td><td><strong>Flags them</strong> and shows the conflicting claims.</td></tr>
+      <tr><td>Keep it current</td><td>Decides when a change matters.</td><td><strong>Runs lint</strong>, re-reads stale pages, proposes updates.</td></tr>
+      <tr><td>Approve what is trusted</td><td><strong>Owns the gate.</strong> Human review is the safety mechanism.</td><td>Drafts freely; never self-promotes to trusted.</td></tr>
+    </tbody>
+  </table></div>
+
+  <p>The division of labour is the actual innovation. It is not "the AI writes my notes for me." It
+  is "the AI does the maintenance that made me abandon my notes, while I keep doing the thinking
+  that makes them worth maintaining."</p>
+
+  <h2 id="prior-art">5 · What is new — and what is not</h2>
+  <p>Karpathy's idea file is careful about lineage: it explicitly compares the pattern in spirit to
+  Vannevar Bush's <strong>Memex</strong> (1945), a personal, curated knowledge store with associative
+  trails between documents. The connections between documents were supposed to be as valuable as
+  the documents themselves. Bush could not solve who would maintain the trails. The LLM handles
+  that part.</p>
+
+  <ul class="timeline">
+    <li><b>1945 · Memex</b><span>Vannevar Bush imagines a private, curated knowledge store with associative trails. The maintenance problem remains open.</span></li>
+    <li><b>1950s–1990s · Zettelkasten and hypertext</b><span>Atomic notes, explicit links, and associative navigation. Niklas Luhmann's slip-box is the canonical manual version.</span></li>
+    <li><b>2001–2020 · Wikis and graph views</b><span>Wikipedia, personal wikis, Roam, Obsidian, Logseq. Markdown links and backlinks become a mainstream way to think in a graph.</span></li>
+    <li><b>2020s · RAG and agentic retrieval</b><span>Vector search, hybrid retrieval, and tool-using agents make large document collections queryable. Synthesis remains mostly per-query.</span></li>
+    <li><b>April 2026 · LLM Wiki</b><span>Karpathy combines the pieces: an LLM maintains a persistent interlinked markdown wiki between the raw sources and the questions. Compile once, query many.</span></li>
+    <li><b>June–July 2026 · Open Knowledge Format</b><span>Google Cloud formalizes the shape as a portable markdown + YAML-frontmatter bundle, then adds provenance, trust, lifecycle, and attestation in v0.2.</span></li>
+  </ul>
+
+  <p>So what is genuinely new? Three things:</p>
+  <ol>
+    <li><strong>The maintainer is an agent.</strong> Prior systems assumed a human would keep the links and summaries current. The agent makes maintenance cheap enough to sustain.</li>
+    <li><strong>The synthesis is an artifact, not a response.</strong> Answers can be filed back into the wiki, so exploration compounds instead of disappearing into chat history.</li>
+    <li><strong>The schema is executable culture.</strong> A plain-language <code>AGENTS.md</code> can encode page types, citation rules, review gates, and workflows. The agent can follow it across sessions without a bespoke application.</li>
+  </ol>
+
+  <div class="box note">
+    <span class="tag">Attribution, precisely</span>
+    <p>Karpathy's contribution is the <em>pattern</em> — the three layers, the three loops, and the
+    human/agent division of labour — not the invention of markdown, wikilinks, graph views, or
+    knowledge graphs. If someone tells you he invented "storing markdown as a graph," the accurate
+    version is: he popularized an LLM-maintained wiki whose links form a graph, and he wrote the idea
+    down in a form other agents could implement.</p>
+  </div>
+
+  <h2 id="applications">6 · Where the pattern fits</h2>
+  <p>Karpathy lists personal goals and health, research, reading a book, business/team knowledge,
+  competitive analysis, due diligence, trip planning, course notes, and hobby deep-dives. The common
+  thread is <strong>accumulating knowledge over time</strong> where you want the connections, not
+  just the documents.</p>
+
+  <div class="table-wrap"><table>
+    <thead><tr><th>Use case</th><th>What compounds</th><th>Main risk</th></tr></thead>
+    <tbody>
+      <tr><td><strong>Research deep-dive</strong></td><td>A thesis, an evidence map, comparisons across papers, a list of open questions.</td><td>Confidently wrong synthesis; source drift; citation inflation.</td></tr>
+      <tr><td><strong>Reading a book</strong></td><td>Character, theme, place, and plot-thread pages; a companion wiki by the final chapter.</td><td>Over-summarizing; losing the author's nuance; spoilers everywhere.</td></tr>
+      <tr><td><strong>Personal goals / journal</strong></td><td>Patterns across entries, recurring obstacles, decisions and their outcomes.</td><td>Sensitive data in a plaintext repo; over-trusting the agent's interpretations.</td></tr>
+      <tr><td><strong>Team/internal wiki</strong></td><td>Project context, decisions, meeting outcomes, customer calls, onboarding knowledge.</td><td>Permissions, oversharing, stale process docs, no clear owner.</td></tr>
+      <tr><td><strong>Competitive / due diligence</strong></td><td>Entity pages, claim comparisons, timelines, contradiction flags.</td><td>Source quality; unconscious bias; unreviewed claims becoming "facts."</td></tr>
+      <tr><td><strong>Course notes / hobby</strong></td><td>Concept pages, worked examples, links to prerequisites, a growing map of the field.</td><td>Volume bloat; writing without revisiting; low-value pages.</td></tr>
+    </tbody>
+  </table></div>
+
+  <p>The pattern is weakest when the corpus is a one-off. If you will never ask a second question,
+  a RAG pipeline or even a long-context prompt is simpler. It is strongest when the same domain gets
+  new sources every week and the questions get more ambitious over time.</p>
+
+  <h2 id="experience">7 · What it feels like in practice</h2>
+  <p>Karpathy's described setup is deliberately low-tech: an LLM agent on one side, Obsidian on the
+  other. The agent edits markdown files based on the conversation; the human browses the results in
+  real time, follows links, checks the graph view, and reads the updated pages. The tool is not a
+  chat window with a document attached. It is a working directory that both parties can inspect.</p>
+  <p>Three mental shifts follow:</p>
+  <ul>
+    <li><strong>From chat history to files.</strong> The durable state is on disk, diffable in git,
+    readable without the model. You can open a page six months later and know where it came from.</li>
+    <li><strong>From retrieval to navigation.</strong> The agent does not just search; it reads the
+    index, follows links, and assembles context from pages that already contain the synthesis.</li>
+    <li><strong>From answers to artifacts.</strong> A good answer should not disappear into the
+    conversation. If it is useful, it becomes a page. The wiki is the memory; the chat is the
+    workbench.</li>
+  </ul>
+
+  <div class="box warn">
+    <span class="tag">The uncomfortable part</span>
+    <p>This only works if you actually read and revisit the wiki. A write-only wiki is an expensive
+    content-generation habit. The feedback loop that keeps it honest is the human opening pages,
+    asking questions, checking citations, and correcting the agent. If you will not do that, do not
+    build it.</p>
+  </div>
+
+  <h2 id="comparison">8 · Comparison: RAG, wiki, long context, graph</h2>
+  <div class="table-wrap"><table>
+    <thead><tr><th>Architecture</th><th>What persists</th><th>When synthesis happens</th><th>Strength</th><th>Weakness</th></tr></thead>
+    <tbody>
+      <tr><td><strong>Single-round RAG</strong></td><td>The index and raw chunks</td><td>Every query</td><td>Cheap, simple, good for point lookups</td><td>No accumulation; weak on multi-source synthesis; retrieval misses compound</td></tr>
+      <tr><td><strong>Agentic RAG</strong></td><td>The index and raw chunks</td><td>Every query, with multiple retrieval/read steps</td><td>Closes much of the synthesis gap at lower cost than a wiki in some tests</td><td>More turns and latency; still no durable synthesis artifact</td></tr>
+      <tr><td><strong>LLM Wiki</strong></td><td>The compiled pages, links, index, and log</td><td>At ingest, then maintained by lint</td><td>Compounding synthesis; human-readable; git-native; strong claim-level citations</td><td>Ingest cost; error compounding; staleness; maintenance discipline</td></tr>
+      <tr><td><strong>Long context</strong></td><td>Nothing (or a cached prompt)</td><td>Every query</td><td>No retrieval pipeline; good for a single large document</td><td>Expensive per query; context limits; no cross-session accumulation</td></tr>
+      <tr><td><strong>GraphRAG / graph DB</strong></td><td>Entities and typed relationships</td><td>At extraction, then queried</td><td>Multi-hop and global questions; explicit structure</td><td>Extraction cost and errors; ontology maintenance; overkill for small corpora</td></tr>
+      <tr><td><strong>Plain notes / wiki</strong></td><td>Human-written pages</td><td>When a human writes them</td><td>Cheap, familiar, high trust</td><td>Maintenance burden; links rot; summaries go stale</td></tr>
+    </tbody>
+  </table></div>
+
+  <p>The LLM Wiki is closest to "plain notes" in storage and closest to "GraphRAG" in ambition. The
+  difference is that it uses prose and links as the graph, and it uses an agent to keep the graph
+  alive. It is not trying to replace a database. It is trying to make a personal knowledge artifact
+  sustainable.</p>
+
+  <h2 id="glossary">9 · Working glossary</h2>
+  <div class="table-wrap"><table>
+    <thead><tr><th>Term</th><th>Meaning in this report</th></tr></thead>
+    <tbody>
+      <tr><td><strong>Raw source</strong></td><td>An immutable input document: article, paper, image, transcript, dataset. The agent reads it but never edits it.</td></tr>
+      <tr><td><strong>Wiki page</strong></td><td>An LLM-generated markdown page: summary, entity, concept, comparison, synthesis, or overview.</td></tr>
+      <tr><td><strong>Schema</strong></td><td>The <code>AGENTS.md</code> / <code>CLAUDE.md</code> contract that tells the agent how the wiki is structured and how to behave.</td></tr>
+      <tr><td><strong>Ingest</strong></td><td>The workflow that compiles a new raw source into the wiki: read, discuss, write, link, index, log.</td></tr>
+      <tr><td><strong>Query</strong></td><td>Answering a question from the wiki with citations, and optionally filing the answer back as a page.</td></tr>
+      <tr><td><strong>Lint</strong></td><td>A health check: contradictions, stale claims, orphans, broken links, missing pages, missing cross-references, data gaps.</td></tr>
+      <tr><td><strong>Wikilink</strong></td><td>A link such as <code>[[concept-rag]]</code> that points to another page. Obsidian, Logseq, and many wiki tools understand it.</td></tr>
+      <tr><td><strong>Backlink</strong></td><td>The reverse edge: which pages link <em>to</em> this page. Backlinks are how you discover context you forgot to look for.</td></tr>
+      <tr><td><strong>Graph view</strong></td><td>A visualization of pages and links. Useful for shape and orphans; not a query engine by itself.</td></tr>
+      <tr><td><strong>OKF</strong></td><td>Open Knowledge Format: Google Cloud's markdown + YAML-frontmatter bundle spec that formalizes the LLM-wiki shape.</td></tr>
+      <tr><td><strong>Provenance</strong></td><td>The link from a wiki claim back to the raw source and the date it was checked. Without it, the wiki is unfalsifiable.</td></tr>
+    </tbody>
+  </table></div>
+
+  <div class="box verdict">
+    <span class="tag">Five takeaways from Part 1</span>
+    <ol>
+      <li><strong>The innovation is timing.</strong> Compile synthesis at ingest instead of re-deriving it at query time.</li>
+      <li><strong>The artifact is the memory.</strong> Chat history is not a knowledge base; files with links and citations are.</li>
+      <li><strong>Maintenance is the bottleneck.</strong> The agent's real job is the bookkeeping humans abandon.</li>
+      <li><strong>Compounding cuts both ways.</strong> A persistent wiki can accumulate truth or confidently repeat errors.</li>
+      <li><strong>It is a synthesis tool, not a database.</strong> Use it where you will revisit a domain and care about connections.</li>
+    </ol>
+  </div>
+
+  <div class="pager">
+    <a href="index.html">← Overview</a>
+    <a class="next" href="02_architecture.html">Part 2 — Architecture &amp; operations →</a>
+  </div>
+
+</div>
+</main>
+
+<footer class="site-foot">
+  <div class="wrap">
+    <span>LLM Wiki Investigation — part of the SQL Mastery repository.</span>
+    <span>Written October 2026 · verify versions and claims before acting on specifics.</span>
+  </div>
+</footer>
+
+</body>
+</html>

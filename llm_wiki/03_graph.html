@@ -1,0 +1,442 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Part 3 — Markdown as a graph: links, backlinks, typed edges, and graph indexes | LLM Wiki Investigation</title>
+<meta name="description" content="How a folder of markdown becomes a graph: wikilinks as edges, backlinks, typed frontmatter relationships, graph views, graph indexes such as ki, and when a graph database is actually worth it.">
+<link rel="stylesheet" href="assets/report.css">
+</head>
+<body>
+
+<header class="top">
+  <div class="wrap">
+    <a class="brand" href="index.html">
+      <span class="brand-icon">L<i>W</i></span>
+      <span><b>LLM Wiki Investigation</b><small>SQL Mastery · field report</small></span>
+    </a>
+    <nav>
+      <a href="index.html">Overview</a>
+      <a href="01_idea.html">1 · The idea</a>
+      <a href="02_architecture.html">2 · Architecture</a>
+      <a class="current" href="03_graph.html">3 · Markdown as graph</a>
+      <a href="04_build.html">4 · Build it</a>
+      <a href="05_evidence.html">5 · Evidence</a>
+    </nav>
+  </div>
+</header>
+
+<section class="hero">
+  <div class="wrap">
+    <p class="eyebrow">Part 3 of 5 · Markdown as a graph</p>
+    <h1>A folder is a graph<br>if you read the links.</h1>
+    <p>Every markdown file is a node. Every link is a directed edge. Folders add containment,
+    headings add sections, frontmatter can add typed relationships, and backlinks turn the graph
+    around. The interesting question is not "graph or no graph" — it is which graph layer earns its
+    keep.</p>
+    <div class="actions">
+      <a class="primary" href="graph.html">Open the interactive graph →</a>
+      <a href="#indexes">Jump to graph indexes</a>
+    </div>
+  </div>
+</section>
+
+<main>
+<div class="wrap">
+
+  <div class="toc">
+    <p>Contents</p>
+    <ol>
+      <li><a href="#already">Markdown is already a graph</a></li>
+      <li><a href="#links">Link syntax and direction</a></li>
+      <li><a href="#views">Backlinks and graph views</a></li>
+      <li><a href="#typed">Typed edges and provenance</a></li>
+      <li><a href="#indexes">Graph indexes: ki, Neo4j, and the filesystem</a></li>
+      <li><a href="#when">When a graph index earns its keep</a></li>
+      <li><a href="#health">Graph health: orphans, hubs, bridges, drift</a></li>
+      <li><a href="#queries">Questions a graph can answer</a></li>
+      <li><a href="#graph-view">The interactive graph in this report</a></li>
+    </ol>
+  </div>
+
+  <h2 id="already">1 · Markdown is already a graph</h2>
+  <p>The graph does not need a special file format. A markdown wiki already has nodes and edges:</p>
+  <ul>
+    <li><strong>Files are nodes.</strong> <code>wiki/concepts/rag.md</code> is a node with a title, a body, and metadata.</li>
+    <li><strong>Links are directed edges.</strong> <code>[[concept-llm-wiki]]</code> in the RAG page is an edge from RAG to LLM Wiki.</li>
+    <li><strong>Folders are containment edges.</strong> <code>wiki/concepts/</code> contains the concept pages; the tree is a hierarchy.</li>
+    <li><strong>Headings are section nodes.</strong> A long page can be a tree of sections, which is useful for section-level retrieval.</li>
+    <li><strong>Frontmatter can add typed edges.</strong> A relationship such as <code>contrasts_with</code> or <code>founded</code> can carry a predicate, source, evidence, and confidence.</li>
+    <li><strong>Tags are membership edges.</strong> A tag is a many-to-many grouping that cuts across the folder tree.</li>
+  </ul>
+
+  <figure class="figure">
+    <svg viewBox="0 0 760 300" width="100%" role="img" aria-label="A markdown graph: a raw source links to a source page, which links to two concept pages; the concepts link to a comparison and a synthesis; the index links to the pages.">
+      <defs>
+        <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+          <path d="M 0 0 L 10 5 L 0 10 z" fill="var(--muted)"></path>
+        </marker>
+      </defs>
+      <g stroke="var(--line)" stroke-width="1.5" marker-end="url(#arrow)" fill="none">
+        <line x1="128" y1="150" x2="202" y2="92"></line>
+        <line x1="268" y1="78" x2="382" y2="58"></line>
+        <line x1="268" y1="92" x2="382" y2="168"></line>
+        <line x1="458" y1="56" x2="562" y2="112"></line>
+        <line x1="458" y1="168" x2="562" y2="122"></line>
+        <line x1="458" y1="64" x2="562" y2="202"></line>
+        <line x1="458" y1="176" x2="562" y2="214"></line>
+        <line x1="632" y1="132" x2="632" y2="192"></line>
+        <line x1="268" y1="236" x2="382" y2="180"></line>
+        <line x1="268" y1="226" x2="382" y2="64"></line>
+      </g>
+      <g font-family="system-ui, sans-serif" font-size="11" text-anchor="middle">
+        <rect x="16" y="132" width="112" height="36" rx="2" fill="var(--amber)" stroke="var(--line)"></rect>
+        <text x="72" y="154" fill="#182430">raw source</text>
+
+        <rect x="202" y="60" width="120" height="36" rx="2" fill="var(--paper-2)" stroke="var(--line)"></rect>
+        <text x="262" y="82" fill="var(--ink)">source page</text>
+
+        <rect x="382" y="30" width="120" height="36" rx="2" fill="var(--mint)" stroke="var(--line)"></rect>
+        <text x="442" y="52" fill="#182430">concept A</text>
+
+        <rect x="382" y="158" width="120" height="36" rx="2" fill="var(--mint)" stroke="var(--line)"></rect>
+        <text x="442" y="180" fill="#182430">concept B</text>
+
+        <rect x="562" y="94" width="120" height="36" rx="2" fill="var(--sky)" stroke="var(--line)"></rect>
+        <text x="622" y="116" fill="#182430">comparison</text>
+
+        <rect x="562" y="192" width="120" height="36" rx="2" fill="var(--accent)" stroke="var(--line)"></rect>
+        <text x="622" y="214" fill="#182430">synthesis</text>
+
+        <rect x="202" y="218" width="120" height="36" rx="2" fill="var(--paper-2)" stroke="var(--line)"></rect>
+        <text x="262" y="240" fill="var(--ink)">index.md</text>
+      </g>
+    </svg>
+    <figcaption>Files are nodes, links are edges, folders are containment. A source page anchors provenance; concepts carry the synthesis; the index is a navigation hub.</figcaption>
+  </figure>
+
+  <p>This is why "store markdown like a graph" is both true and misleading. The files are not stored
+  <em>in</em> a graph; they are stored in a directory. The graph is a <strong>view</strong> over the
+  directory: parse the links, resolve the paths, and you have nodes and edges. That view can be built
+  in memory, in a search index, or in a graph database. The files stay the source of truth.</p>
+
+  <h2 id="links">2 · Link syntax and direction</h2>
+  <p>There are two link families in a typical markdown wiki. Wiki-style links are compact and
+  first-class in Obsidian, Logseq, and many personal wiki tools. Standard markdown links are portable
+  and are what OKF uses.</p>
+
+  <div class="table-wrap"><table>
+    <thead><tr><th>Syntax</th><th>Meaning</th><th>Notes</th></tr></thead>
+    <tbody>
+      <tr><td><code>[[concept-rag]]</code></td><td>Link to a page by slug</td><td>Obsidian-style. Resolution depends on the tool's link settings.</td></tr>
+      <tr><td><code>[[concept-rag|RAG]]</code></td><td>Link with display text</td><td>The alias is presentation; the edge points at the target.</td></tr>
+      <tr><td><code>[[concept-rag#trade-offs]]</code></td><td>Link to a heading</td><td>Useful for section-level navigation and citations.</td></tr>
+      <tr><td><code>![[diagram.png]]</code></td><td>Embed an image</td><td>An embed is a containment/transclusion edge, not just a link.</td></tr>
+      <tr><td><code>[RAG](/concepts/rag.md)</code></td><td>Standard markdown link</td><td>Portable; OKF's recommended bundle-relative form starts with <code>/</code>.</td></tr>
+      <tr><td><code>[trade-offs](/concepts/rag.md#trade-offs)</code></td><td>Standard link to a heading</td><td>Works on GitHub, in static site generators, and in most editors.</td></tr>
+      <tr><td><code>[[not-yet-written]]</code></td><td>Unresolved link</td><td>Not necessarily an error. It can be a placeholder for future knowledge.</td></tr>
+    </tbody>
+  </table></div>
+
+  <p>Direction matters. If page A links to page B, the graph has an edge <code>A → B</code>. The
+  <strong>backlink</strong> is the reverse view: "B is referenced by A." Most wiki tools show
+  backlinks automatically. A graph database can answer the same question with one indexed lookup
+  instead of scanning every file.</p>
+
+  <div class="box note">
+    <span class="tag">A link is not a relationship type</span>
+    <p>A plain link says "this page references that page." It does not say whether the relationship is
+    <em>supports</em>, <em>contradicts</em>, <em>supersedes</em>, <em>is an example of</em>, or merely
+    <em>mentions</em>. That distinction is the difference between a link graph and a knowledge graph.
+    You can add typed edges in frontmatter, but most wikis do not need them on day one.</p>
+  </div>
+
+  <h2 id="views">3 · Backlinks and graph views</h2>
+  <p>Obsidian's graph view is the reference viewer in Karpathy's setup. It renders pages as nodes and
+  links as edges, with a local graph for the current page and a global graph for the vault. The
+  backlinks pane shows inbound links. The graph view is genuinely useful for seeing shape: which
+  pages are hubs, which are orphans, which clusters are connected, and where the wiki is a hairball.</p>
+
+  <p>But a graph view is a <strong>visualization</strong>, not a query engine. It does not answer
+  "shortest path from this source to that concept," "which pages have no citations," or "what changed
+  downstream of this claim." Those require a graph index or a script. Treat the view as a map, not a
+  database.</p>
+
+  <div class="split">
+    <div class="box rule">
+      <span class="tag">What the graph view is good for</span>
+      <ul>
+        <li>Spotting orphans and disconnected clusters.</li>
+        <li>Seeing which pages act as hubs.</li>
+        <li>Checking whether the wiki has a navigable shape.</li>
+        <li>Exploring a neighborhood you did not know existed.</li>
+      </ul>
+    </div>
+    <div class="box warn">
+      <span class="tag">What it cannot do</span>
+      <ul>
+        <li>Traverse to a depth and return a path.</li>
+        <li>Rank by centrality or community.</li>
+        <li>Check that every claim has a source.</li>
+        <li>Tell you whether the link is semantically correct.</li>
+      </ul>
+    </div>
+  </div>
+
+  <h3>Topology: aim for a tree, not a hairball</h3>
+  <p>A common failure is a star-shaped wiki where one overview page links to everything and every new
+  page attaches to the same gravity well. The result looks connected but is hard to navigate: every
+  path goes through the hub, and the graph view becomes a hairball. A better shape is a
+  <strong>tree of clusters</strong>: an index at the top, a hub per cluster, member pages that link up
+  to the hub and sideways to siblings, and sources/syntheses as leaves.</p>
+
+  <pre><code>index.md
+└── overview.md
+    ├── cluster: retrieval
+    │   ├── hub: retrieval.md
+    │   ├── concept: rag.md
+    │   ├── concept: vector-search.md
+    │   └── comparison: rag-vs-wiki.md
+    ├── cluster: knowledge-maintenance
+    │   ├── hub: llm-wiki.md
+    │   ├── concept: ingestion.md
+    │   └── concept: lint.md
+    └── sources/
+        ├── source-karpathy-llm-wiki.md
+        └── source-rag-vs-wiki-study.md</code></pre>
+
+  <p>This is a design heuristic, not a law. The point is to make navigation predictable: from any
+  page, you can go up to its cluster hub, sideways to a sibling, or down to evidence. Karpathy's
+  index file plays the role of the top-level map; the cluster hubs keep the graph from collapsing
+  into a single star.</p>
+
+  <h2 id="typed">4 · Typed edges and provenance</h2>
+  <p>Plain links are enough for navigation. If you want the graph to support claims like "this method
+  <em>supersedes</em> that one" or "this person <em>founded</em> that company," you need typed edges.
+  The usual way to add them to markdown is YAML frontmatter.</p>
+
+  <pre><code>---
+type: concept
+title: LLM Wiki
+graph:
+  node_id: concept:llm-wiki
+  node_type: concept
+  relationships:
+    - predicate: contrasts_with
+      object: concept:rag
+      source: source-karpathy-llm-wiki
+      evidence: "RAG rediscovers knowledge on every query; the wiki compiles it once."
+      confidence: high
+      status: current
+    - predicate: depends_on
+      object: concept:markdown-graph
+      source: source-karpathy-llm-wiki
+      evidence: "A structured, interlinked collection of markdown files."
+      confidence: high
+      status: current
+---</code></pre>
+
+  <p>A typed edge should carry more than a predicate. The useful fields are:</p>
+  <ul>
+    <li><strong>predicate</strong> — what kind of relationship it is;</li>
+    <li><strong>object</strong> — the target node;</li>
+    <li><strong>source</strong> — the page or raw file that supports the claim;</li>
+    <li><strong>evidence</strong> — a quote or precise pointer, not a vibe;</li>
+    <li><strong>confidence</strong> — high / medium / low;</li>
+    <li><strong>status</strong> — current / historical / proposed / disputed / superseded.</li>
+  </ul>
+
+  <p>This is the model used by community graph layers such as
+  <a href="https://praneybehl.github.io/llm-wiki-plugin/graph.html">llm-wiki-plugin</a>. The important
+  discipline is that the extractor must not invent edges: if there is no source and no evidence, the
+  edge is a <code>mentions</code> link at best. An ontology file can declare which predicates are
+  allowed and which node types they connect, so lint can validate the graph instead of trusting the
+  model's prose.</p>
+
+  <div class="box claim">
+    <span class="tag">Typed edges are optional; provenance is not</span>
+    <p>You can run a perfectly useful LLM Wiki with plain <code>[[wikilinks]]</code> and no ontology.
+    What you cannot skip is the link from a claim back to its source. A typed edge without evidence
+    is more dangerous than an untyped link, because it looks more authoritative. Add types when they
+    answer real questions; add provenance from day one.</p>
+  </div>
+
+  <h2 id="indexes">5 · Graph indexes: ki, Neo4j, and the filesystem</h2>
+  <p>A graph index parses the markdown, builds nodes and edges, and stores them where traversal and
+  reverse lookup are cheap. It does not replace the files. The best reference implementation for this
+  pattern is <code>ki</code> (knowledge-index), which syncs a folder of markdown to Neo4j and exposes
+  navigation commands to an agent.</p>
+
+  <h3>The ki model</h3>
+  <div class="table-wrap"><table>
+    <thead><tr><th>Node / edge</th><th>Meaning</th></tr></thead>
+    <tbody>
+      <tr><td><code>Vault</code></td><td>The corpus root.</td></tr>
+      <tr><td><code>Folder</code></td><td>A directory in the vault.</td></tr>
+      <tr><td><code>Document</code></td><td>One <code>.md</code> file. Linked non-markdown files become stub nodes.</td></tr>
+      <tr><td><code>Section</code></td><td>A heading-bounded subsection. Each document is a tree of sections.</td></tr>
+      <tr><td><code>:HAS</code></td><td>Containment: Vault → Folder → Document → Section.</td></tr>
+      <tr><td><code>:NEXT_SECTION</code></td><td>Reading order between sections.</td></tr>
+      <tr><td><code>:LINKS_TO</code></td><td>Every wikilink / markdown link, including external URLs.</td></tr>
+    </tbody>
+  </table></div>
+
+  <p>The model is deliberately small. It does not try to infer an enterprise ontology. It gives the
+  agent a map: where a document sits, what sections it contains, what follows what, and what links to
+  what. Because construction is deterministic and idempotent, the index is a disposable cache: delete
+  it and rebuild from the files.</p>
+
+  <pre><code># Build / sync the index (conceptual; see the ki repo for exact commands)
+ki index ./my-wiki
+
+# Navigate
+ki search "rag vs wiki"
+ki tree concept-llm-wiki
+ki neighbors concept-rag
+ki path source-karpathy-llm-wiki concept-qmd
+ki backlinks concept-llm-wiki</code></pre>
+
+  <p>Neo4j's argument for this layer is that a filesystem scales linearly: grep reads every file,
+  resolving each link is another pass, and "what points at this page?" has no index. A graph index
+  turns a hop into a pointer and makes backlinks a native query. That is technically fair, but it is
+  a vendor argument. At a few hundred pages, the filesystem is usually fast enough. The index earns
+  its keep when traversal and backlinks are frequent, or when many agents share the same vault.</p>
+
+  <h3>What a graph database adds</h3>
+  <div class="table-wrap"><table>
+    <thead><tr><th>Operation</th><th>Filesystem + grep</th><th>Graph index</th></tr></thead>
+    <tbody>
+      <tr><td>Find a page by keyword</td><td>Fast with an index file or search tool</td><td>Fast with a full-text index</td></tr>
+      <tr><td>Follow a link</td><td>Open the file, parse the link, open the target</td><td>Pointer / indexed edge</td></tr>
+      <tr><td>Backlinks</td><td>Scan every file or maintain a cache</td><td>Native reverse edge</td></tr>
+      <tr><td>k-hop traversal</td><td>k passes over the corpus (or a precomputed cache)</td><td>Cost tracks the neighborhood, not the corpus</td></tr>
+      <tr><td>Shortest path</td><td>Custom BFS over parsed links</td><td>Native path query</td></tr>
+      <tr><td>Centrality / communities</td><td>Export and run an analytics library</td><td>Graph Data Science or in-process library</td></tr>
+      <tr><td>Section-level retrieval</td><td>Parse headings and chunks yourself</td><td>Section nodes with reading order</td></tr>
+    </tbody>
+  </table></div>
+
+  <p>Notice that search and navigation are different columns. A vector index can find semantically
+  similar pages but cannot tell you what links to them. A graph index can traverse links but is not a
+  good semantic search engine by itself. Mature systems often combine both: lexical + vector search
+  for discovery, graph traversal for context, and a reranker for the final order.</p>
+
+  <h2 id="when">6 · When a graph index earns its keep</h2>
+  <div class="table-wrap"><table>
+    <thead><tr><th>Situation</th><th>Right layer</th><th>Why</th></tr></thead>
+    <tbody>
+      <tr><td>Personal wiki, under ~100 pages</td><td><strong>Index file + grep + Obsidian graph view</strong></td><td>No infrastructure. The index is enough and the graph view is a useful map.</td></tr>
+      <tr><td>100–1,000 pages, mostly keyword questions</td><td><strong>Local hybrid search (qmd)</strong></td><td>Section-level retrieval and reranking; still no graph server.</td></tr>
+      <tr><td>Frequent "what links here?" and multi-hop questions</td><td><strong>Graph index (ki / Neo4j)</strong></td><td>Backlinks and traversal are native; the index is rebuildable.</td></tr>
+      <tr><td>Typed domain model with entities and predicates</td><td><strong>Graph index + ontology / RDF</strong></td><td>Validation, inference, and cross-dataset identity become possible.</td></tr>
+      <tr><td>Whole-graph analytics as a feature</td><td><strong>Neo4j GDS, NetworkX, graph analytics platform</strong></td><td>PageRank, communities, and connected components are batch computations.</td></tr>
+      <tr><td>Transactional source of truth, high QPS, per-tenant ACLs</td><td><strong>Not this pattern</strong></td><td>Plain markdown has no transactions or access control. Use a database / search service.</td></tr>
+    </tbody>
+  </table></div>
+
+  <div class="box rule">
+    <span class="tag">The rule of least infrastructure</span>
+    <p>Start with files, an index, and grep. Add search when finding pages becomes the bottleneck.
+    Add a graph index when <em>relationships</em> become the bottleneck. Add a graph database when you
+    need a transactional, permissioned, multi-user graph — not because the wiki has links.</p>
+  </div>
+
+  <h2 id="health">7 · Graph health: orphans, hubs, bridges, drift</h2>
+  <p>A graph gives you a vocabulary for wiki health. These are the metrics worth checking in lint:</p>
+
+  <div class="table-wrap"><table>
+    <thead><tr><th>Metric</th><th>What it reveals</th><th>Action</th></tr></thead>
+    <tbody>
+      <tr><td><strong>Orphans</strong></td><td>Pages with no inbound links. They exist but are unreachable by navigation.</td><td>Link them from a hub, merge them, or delete them.</td></tr>
+      <tr><td><strong>Broken links</strong></td><td>Edges to pages that do not exist. Sometimes a placeholder; sometimes drift.</td><td>Create the page or fix the link. Do not ignore a growing list.</td></tr>
+      <tr><td><strong>Hubs</strong></td><td>High-degree pages. A hub can be a useful index or a gravity well that hides structure.</td><td>Keep intentional hubs; split accidental supernodes.</td></tr>
+      <tr><td><strong>Bridges</strong></td><td>Pages that connect otherwise separate clusters. They are valuable and fragile.</td><td>Protect them; add redundant links if a bridge is load-bearing.</td></tr>
+      <tr><td><strong>Depth from index</strong></td><td>How many hops it takes to reach a page from <code>index.md</code>.</td><td>Flatten navigation; add cluster hubs if depth grows.</td></tr>
+      <tr><td><strong>Source coverage</strong></td><td>Concepts with no source pages, or sources with no concept links.</td><td>Ingest more carefully; link evidence to claims.</td></tr>
+      <tr><td><strong>Duplicate concepts</strong></td><td>Two pages for the same idea under different slugs.</td><td>Merge and add aliases/redirects; update inbound links.</td></tr>
+      <tr><td><strong>Stale edges</strong></td><td>Links to deprecated or superseded pages.</td><td>Mark the target <code>deprecated</code>; update or remove the edge.</td></tr>
+    </tbody>
+  </table></div>
+
+  <p>These checks can be deterministic. You do not need an LLM to count inbound links or resolve
+  paths. The LLM is better at the semantic layer: "these two pages look like the same concept,"
+  "this link says supports but the source actually contradicts," "this hub is hiding three clusters."
+  Use each tool for what it is good at.</p>
+
+  <h2 id="queries">8 · Questions a graph can answer</h2>
+  <p>Here are the kinds of questions that become natural once the wiki is a graph. They are also a
+  good test of whether you need a graph index at all: if you ask them weekly, add one; if you ask
+  them once, write a script.</p>
+
+  <div class="table-wrap"><table>
+    <thead><tr><th>Question</th><th>Graph operation</th><th>Why it matters</th></tr></thead>
+    <tbody>
+      <tr><td>What links to this concept?</td><td>Backlinks / reverse edges</td><td>Find context and evidence you forgot to look for.</td></tr>
+      <tr><td>How are these two ideas connected?</td><td>Shortest path</td><td>Explain a relationship in one or two hops.</td></tr>
+      <tr><td>What is the load-bearing page?</td><td>Degree / PageRank / centrality</td><td>Identify hubs worth reading first and protecting.</td></tr>
+      <tr><td>What clusters exist that nobody labeled?</td><td>Community detection</td><td>Discover themes and missing hubs.</td></tr>
+      <tr><td>What changed downstream of this source?</td><td>k-hop traversal from the source</td><td>Impact analysis when a source is corrected or superseded.</td></tr>
+      <tr><td>Which concepts have no evidence?</td><td>Typed query: concepts without a source edge</td><td>Find claims that cannot be audited.</td></tr>
+      <tr><td>Which sources are orphaned?</td><td>Sources with no inbound/outbound concept links</td><td>Find ingests that never became knowledge.</td></tr>
+      <tr><td>What is the shortest reading path?</td><td>Path from index to a target</td><td>Build onboarding or study guides from the graph.</td></tr>
+    </tbody>
+  </table></div>
+
+  <p>For a small wiki, most of these can be answered with a 50-line script over parsed links. For a
+  large or shared wiki, a graph index makes them interactive. The important thing is to ask the
+  question before buying the engine.</p>
+
+  <h2 id="graph-view">9 · The interactive graph in this report</h2>
+  <p>This report ships a small interactive graph as a demonstration. It is not generated from the
+  HTML pages; it is a hand-built map of the report's pages, concepts, tools, and risks. Nodes are
+  clickable, edges show relationships, and the side panel links back to the relevant section. Use it
+  to see what a graph view feels like when the graph is small enough to read.</p>
+
+  <div class="box note">
+    <span class="tag">What the demo deliberately does not do</span>
+    <p>It does not parse markdown, run a layout server, or query a database. It is a static
+    visualization with a tiny force simulation. That is the point: for a small wiki, the graph is a
+    view, not a platform. If you want the real thing, point <code>ki</code> at a folder of markdown
+    and query the index.</p>
+  </div>
+
+  <p><a href="graph.html"><strong>Open the interactive graph view →</strong></a></p>
+
+  <div class="box verdict">
+    <span class="tag">Five takeaways from Part 3</span>
+    <ol>
+      <li><strong>The graph is already there.</strong> Files are nodes, links are edges, folders are containment.</li>
+      <li><strong>Backlinks are the killer feature.</strong> They turn a forward-only folder into a navigable network.</li>
+      <li><strong>Links are not relationships.</strong> Add typed edges only when the predicate does real work; always keep provenance.</li>
+      <li><strong>A graph view is not a query engine.</strong> Visualization helps humans; traversal and backlinks need an index or a script.</li>
+      <li><strong>Keep the files canonical.</strong> A graph index is a disposable cache, not a second source of truth.</li>
+    </ol>
+  </div>
+
+  <h2 id="sources">Sources for this part</h2>
+  <ol class="small">
+    <li>Andrej Karpathy, <em>LLM Wiki</em> — <a href="https://gist.github.com/karpathy/442a6bf555914893e9891c11519de94f">gist.github.com</a>.</li>
+    <li>Open Knowledge Format v0.2, cross-linking and index/log conventions — <a href="https://github.com/GoogleCloudPlatform/open-knowledge-format/blob/main/SPEC.md">SPEC.md</a>.</li>
+    <li>Neo4j, <em>Scale Karpathy's LLM wiki with a lightweight graph</em> — <a href="https://neo4j.com/blog/agentic-ai/scaling-karpathy-llm-wiki-graph/">neo4j.com</a> (vendor argument).</li>
+    <li><code>ki</code> / knowledge-index — <a href="https://github.com/zach-blumenfeld/knowledge-index">github.com/zach-blumenfeld/knowledge-index</a>.</li>
+    <li>llm-wiki-plugin, graph layer and typed relationships — <a href="https://praneybehl.github.io/llm-wiki-plugin/graph.html">praneybehl.github.io/llm-wiki-plugin</a>.</li>
+    <li>ScrapingArt, <em>Karpathy-LLM-Wiki-Stack</em>, graph architecture guidance — <a href="https://github.com/ScrapingArt/Karpathy-LLM-Wiki-Stack">github.com/ScrapingArt/Karpathy-LLM-Wiki-Stack</a>.</li>
+  </ol>
+
+  <div class="pager">
+    <a href="02_architecture.html">← Part 2 — Architecture</a>
+    <a class="next" href="04_build.html">Part 4 — Build it →</a>
+  </div>
+
+</div>
+</main>
+
+<footer class="site-foot">
+  <div class="wrap">
+    <span>LLM Wiki Investigation — part of the SQL Mastery repository.</span>
+    <span>Written October 2026 · verify versions and claims before acting on specifics.</span>
+  </div>
+</footer>
+
+</body>
+</html>

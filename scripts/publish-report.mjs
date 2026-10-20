@@ -1,6 +1,7 @@
-// Copies the standalone vector + graph database investigations into the static
-// export so they ship alongside the course app on GitHub Pages
-// (out/vector-databases/, out/graph-databases/).
+// Copies the standalone vector database, graph database, and LLM wiki
+// investigations into the static export so they ship alongside the course app
+// on GitHub Pages (out/vector-databases/, out/graph-databases/,
+// out/llm-wiki/).
 // next.config.ts only produces out/ for static exports (GITHUB_ACTIONS builds),
 // so skip outside that context instead of creating a half-populated out/.
 import { cpSync, existsSync } from 'node:fs';
@@ -11,6 +12,7 @@ const out = join(root, 'out');
 const reports = [
   ['vector_databases', 'vector-databases'],
   ['graph_databases', 'graph-databases'],
+  ['llm_wiki', 'llm-wiki'],
 ];
 
 if (!existsSync(out)) {
